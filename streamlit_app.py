@@ -276,6 +276,95 @@ def tab_enrichment(cfg: dict[str, Any]) -> None:
     st.dataframe(preview, use_container_width=True)
 
 
+def _render_production_verdict(em) -> None:
+    """Avalia as metricas de teste e exibe um veredito de prontidao para producao.
+
+    Faixas calibradas para o problema (recall positivo e prioridade, base ~10% pos):
+      - VERDE: pronto para producao
+      - AMARELO: utilizavel, mas exige monitoramento ou ajuste
+      - VERMELHO: nao recomendado para producao
+    """
+    issues_red: list[str] = []
+    issues_yellow: list[str] = []
+    wins_green: list[str] = []
+
+    if em.roc_auc >= 0.90:
+        wins_green.append(f"ROC-AUC {em.roc_auc:.3f} (forte capacidade de separar classes)")
+    elif em.roc_auc >= 0.80:
+        issues_yellow.append(f"ROC-AUC {em.roc_auc:.3f} (aceitavel, mas pode melhorar)")
+    else:
+        issues_red.append(f"ROC-AUC {em.roc_auc:.3f} abaixo de 0.80 (separabilidade fraca)")
+
+    if em.pr_auc >= 0.65:
+        wins_green.append(f"PR-AUC {em.pr_auc:.3f} (excelente para base desbalanceada)")
+    elif em.pr_auc >= 0.45:
+        wins_green.append(f"PR-AUC {em.pr_auc:.3f} (bom para base desbalanceada)")
+    elif em.pr_auc >= 0.30:
+        issues_yellow.append(f"PR-AUC {em.pr_auc:.3f} (aceitavel; monitorar precision/recall)")
+    else:
+        issues_red.append(f"PR-AUC {em.pr_auc:.3f} muito baixo (modelo perto do baseline aleatorio)")
+
+    if em.recall >= 0.85:
+        wins_green.append(f"Recall {em.recall:.3f} atende o piso operacional de 85%")
+    elif em.recall >= 0.70:
+        issues_yellow.append(
+            f"Recall {em.recall:.3f} abaixo do piso 0.85 - alguns colidentes serao perdidos"
+        )
+    else:
+        issues_red.append(
+            f"Recall {em.recall:.3f} muito baixo (>= 30% dos colidentes nao seriam capturados)"
+        )
+
+    if em.f1 >= 0.45:
+        wins_green.append(f"F1 {em.f1:.3f} (bom equilibrio)")
+    elif em.f1 >= 0.30:
+        issues_yellow.append(f"F1 {em.f1:.3f} (equilibrio modesto entre precisao e recall)")
+    else:
+        issues_red.append(f"F1 {em.f1:.3f} muito baixo")
+
+    cm = em.confusion
+    fn = cm[1][0]
+    fp = cm[0][1]
+    tp = cm[1][1]
+    tn = cm[0][0]
+    if (tp + fn) > 0 and fn / (tp + fn) > 0.30:
+        issues_red.append(
+            f"Falsos Negativos: {fn} de {tp + fn} colidentes ({100 * fn / (tp + fn):.1f}%) - "
+            "passariam despercebidos em producao"
+        )
+
+    st.subheader("Veredito de prontidao para producao")
+    if issues_red:
+        st.error(
+            "**NAO RECOMENDADO para producao** - corrigir os pontos abaixo antes de prosseguir:\n\n"
+            + "\n".join(f"- {x}" for x in issues_red)
+            + ("\n\n_Pontos secundarios:_\n" + "\n".join(f"- {x}" for x in issues_yellow) if issues_yellow else "")
+        )
+        st.caption(
+            "Sugestoes: aumentar epocas, ajustar pos_weight, revisar features das especificacoes, "
+            "considerar mais dados rotulados ou usar arquitetura maior."
+        )
+    elif issues_yellow:
+        st.warning(
+            "**ACEITAVEL com monitoramento** - bom para um piloto, mas observe os pontos abaixo:\n\n"
+            + "\n".join(f"- {x}" for x in issues_yellow)
+            + ("\n\n_Pontos fortes:_\n" + "\n".join(f"- {x}" for x in wins_green) if wins_green else "")
+        )
+        st.caption(
+            "Sugestoes: monitorar drift de score em producao, retreinar a cada novo lote de "
+            "rotulos, considerar ajuste fino do threshold com a area de negocio."
+        )
+    else:
+        st.success(
+            "**PRONTO para producao** - o modelo atende aos criterios de qualidade definidos:\n\n"
+            + "\n".join(f"- {x}" for x in wins_green)
+        )
+        st.caption(
+            f"Threshold de operacao recomendado: {em.threshold:.3f} "
+            "(ajustado para recall >= 0.85, conforme politica do projeto)."
+        )
+
+
 def _draw_history(history: list[dict[str, float]]) -> None:
     if not history:
         return
@@ -302,6 +391,50 @@ def _draw_history(history: list[dict[str, float]]) -> None:
 
 def tab_train(cfg: dict[str, Any]) -> None:
     st.header("3. Treino em tempo real")
+
+    st.markdown(
+        """
+**O que esta aba faz**
+
+Aqui o modelo aprende, a partir dos exemplos rotulados pelo INPI, qual combinacao de
+sinais (escrita parecida, som parecido, especificacao parecida, classe igual etc.)
+indica colidencia. O treino acontece em **epocas** - cada epoca e uma passada
+completa pelos pares de marcas. A cada epoca o modelo ajusta seus pesos um pouco
+para errar menos.
+
+**O que voce ve abaixo**
+
+- **Loss por epoca**: o erro medio que o modelo esta cometendo. **Deve cair com o
+  tempo**. Se ficar oscilando ou crescer, o aprendizado nao esta convergindo.
+- **Metricas de validacao**: medidas em pares que o modelo NAO viu durante o treino,
+  para detectar se ele esta apenas decorando os exemplos (overfit).
+  - **PR-AUC**: principal metrica neste projeto. Deve **subir** com as epocas.
+  - **ROC-AUC**: capacidade geral de separar colidentes de nao-colidentes.
+  - **Recall@0.5**: % de colidentes verdadeiros que o modelo capturaria com corte 0.5.
+  - **F1@0.5**: equilibrio entre precisao e recall.
+
+**Sinais de bom treino (verde para producao)**
+
+- Loss caindo de forma consistente nas primeiras epocas.
+- PR-AUC e ROC-AUC de validacao subindo.
+- Diferenca entre treino e validacao moderada (sinal de generalizacao).
+- O processo encerra por **early stopping** (para sozinho quando para de melhorar) -
+  isso e desejado, indica que o modelo encontrou seu melhor ponto.
+
+**Sinais de alerta (vermelho - nao ir para producao)**
+
+- Loss subindo ou oscilando muito.
+- PR-AUC de validacao abaixo de 0.30 ao final do treino (lembrando que a base
+  positiva e ~10%, entao o baseline aleatorio fica em torno de 0.10).
+- Recall@0.5 muito baixo (< 0.30) - o modelo esta deixando passar muitos colidentes.
+- Treino completa todas as epocas sem early stopping E PR-AUC ainda esta subindo:
+  pode ter sido cortado cedo demais; aumente "Epochs maximas" no sidebar.
+
+> Apos o treino terminar, va para a **aba 4 (Avaliacao)** para ver as metricas no
+> conjunto de teste (que nao foi usado em nenhuma decisao do treino) - esse e o
+> numero que vale para decidir producao.
+        """
+    )
 
     df = st.session_state.get("df")
     X = st.session_state.get("feature_matrix")
@@ -424,6 +557,50 @@ def tab_train(cfg: dict[str, Any]) -> None:
 def tab_evaluation() -> None:
     st.header("4. Avaliacao")
 
+    st.markdown(
+        """
+**O que esta aba faz**
+
+Mede a qualidade real do modelo em pares que ele **nunca viu** durante o treino
+(conjunto de teste). Esse e o numero que vale para a decisao de levar ou nao
+para producao - tudo o que aparece aqui e cego ao processo de aprendizado.
+
+**Como ler cada metrica (em palavras simples)**
+
+- **ROC-AUC** (0 a 1): probabilidade do modelo dar score maior para um colidente
+  real do que para um nao-colidente, escolhendo dois pares aleatorios. **0.5 e
+  chute, 1.0 e perfeito.**
+- **PR-AUC** (0 a 1): metrica que prioriza acerto na classe rara (colidentes).
+  **A mais importante neste projeto** porque so 10% dos pares sao colidentes.
+  Baseline aleatorio ~ 0.10.
+- **Recall** (0 a 1): de todos os colidentes verdadeiros, qual % o modelo
+  capturou. **Foco principal do negocio** - falso negativo e o erro mais grave.
+- **F1** (0 a 1): equilibrio entre precisao (quantos dos alarmados sao reais)
+  e recall (quantos dos reais foram alarmados).
+
+**Slider de threshold**: e o ponto de corte que vira "sim, colide" (1) ou "nao
+colide" (0). Mover o slider muda dinamicamente a matriz de confusao e as
+metricas - serve para entender o trade-off antes de gravar a decisao final.
+
+**Tabela de matriz de confusao**
+
+| Celula | Significado |
+|---|---|
+| Real 0 / Pred 0 | Verdadeiro Negativo (acertou que nao colide) |
+| Real 0 / Pred 1 | **Falso Positivo** (alarme falso - o time vai investigar a toa) |
+| Real 1 / Pred 0 | **Falso Negativo** - O ERRO MAIS GRAVE (deixou passar colidente) |
+| Real 1 / Pred 1 | Verdadeiro Positivo (capturou colidente) |
+
+**Curva ROC** mostra TPR vs FPR para todos os thresholds; quanto mais "puxada para
+cima e para a esquerda", melhor. **Curva PR** mostra Precision vs Recall; quanto
+mais "puxada para cima e para a direita", melhor.
+
+**Histograma de scores** mostra a distribuicao do score (NN) para positivos vs
+negativos; idealmente os positivos (em uma cor) ficam concentrados a direita
+(scores altos) e os negativos a esquerda (scores baixos), com pouca sobreposicao.
+        """
+    )
+
     model = st.session_state.get("model")
     splits = st.session_state.get("splits")
     if model is None or splits is None:
@@ -446,6 +623,8 @@ def tab_evaluation() -> None:
     c2.metric("PR-AUC", f"{em.pr_auc:.4f}")
     c3.metric("Recall", f"{em.recall:.4f}")
     c4.metric("F1", f"{em.f1:.4f}")
+
+    _render_production_verdict(em)
 
     cm = em.confusion
     cm_df = pd.DataFrame(cm, index=["Real 0", "Real 1"], columns=["Pred 0", "Pred 1"])
@@ -502,6 +681,55 @@ def tab_evaluation() -> None:
 
 def tab_explainability() -> None:
     st.header("5. Explicabilidade")
+
+    st.markdown(
+        """
+**O que esta aba faz**
+
+Mostra **em quais features o modelo realmente confiou** para tomar decisoes. Isso
+e essencial em projetos juridicos: precisamos poder defender por que um par foi
+classificado como colidente ou nao.
+
+**Permutation Importance (em palavras simples)**
+
+Para cada feature, o sistema:
+1. Embaralha aleatoriamente os valores daquela feature (so daquela coluna).
+2. Mede quanto a metrica do modelo (PR-AUC ou ROC-AUC) PIORA depois do embaralhamento.
+3. Quanto mais a metrica piora, mais o modelo dependia daquela feature.
+
+**Como interpretar a tabela e o grafico**
+
+- **Importance positiva alta**: feature critica - o modelo perde performance se
+  ela e perturbada. Idealmente, voce ve aqui as features que fazem sentido de
+  negocio: `ofta_final`, `spec_cosine_emb`, `cls_same`, `inter_*`, etc.
+- **Importance proxima de zero**: feature redundante ou sem sinal - o modelo nao
+  esta usando.
+- **Importance negativa**: extremamente raro; pode indicar ruido na amostra ou
+  feature que esta confundindo levemente. Geralmente ignoravel.
+
+**Sinais BONS para producao (modelo confiavel)**
+
+- As features no topo sao **interpretaveis** e fazem sentido para o negocio.
+- Existe **diversidade de blocos** no top-30 (gráfica + fonetica + spec + classe +
+  interacoes), nao apenas um tipo dominante.
+- Features de interacao (`inter_*`) aparecem entre as importantes - significa que
+  a rede aprendeu combinacoes nao-triviais, nao so similaridade nominativa.
+
+**Sinais de ALERTA**
+
+- O top e dominado por **uma unica feature** (ex.: so `ofta_final`) - significa
+  que a rede virou um disfarce da heuristica antiga, sem agregar valor.
+- Features semanticas (`spec_cosine_emb`, `inter_classe_diff_mas_emb_alto`) com
+  importance proxima de zero - significa que o sinal de especificacao esta sendo
+  ignorado, e o modelo pode falhar nos cenarios de "risco oculto".
+- Features de interacao todas com importance baixa - a rede nao aprendeu
+  combinacoes; pode estar subdimensionada (poucas camadas/neuronios) ou treinada
+  por poucas epocas.
+
+> Observacao: parametros maiores (mais amostras, mais repeticoes) geram numeros
+> mais estaveis, mas demoram mais. Comece com 200-800 amostras e 2 repeticoes.
+        """
+    )
 
     model = st.session_state.get("model")
     splits = st.session_state.get("splits")
