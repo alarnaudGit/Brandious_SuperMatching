@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "timestamp": "2026-04-30T13:51:07.163755+00:00",
+  "timestamp": "2026-04-30T15:30:37.497214+00:00",
   "dataset_hash": "3b06ce047455dcd324536d384ae884b6a267a2399136345a143c5819dbabd03a",
   "label_column_source": "Rótulo (1=manter, 0=outro)",
   "label_column_canon": "label",

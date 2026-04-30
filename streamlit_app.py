@@ -52,7 +52,17 @@ from src.model.mlp import BrandSimilarityMLP, MLPConfig  # noqa: E402
 from src.model.train import TrainConfig, train_model  # noqa: E402
 from src.normalize import calcular_score_complexo, calcular_similaridade_ofta  # noqa: E402
 from src.pipeline.preprocessor import FeaturePreprocessor, PreprocessorConfig  # noqa: E402
-from src.reports import build_report, compare_against_heuristic, save_report  # noqa: E402
+from src.reports import (  # noqa: E402
+    all_errors_separated,
+    build_report,
+    compare_against_heuristic,
+    feature_summary_stats,
+    features_correlation_with_label,
+    save_report,
+    score_decile_table,
+    score_distribution_stats,
+    top_errors,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 logger = logging.getLogger("streamlit_app")
@@ -482,13 +492,28 @@ para errar menos.
         st.session_state.stop_train = False
         st.session_state.history = []
 
-        (X_train, y_train), (X_val, y_val), (X_test, y_test) = stratified_split(X, y, split_cfg)
+        from sklearn.model_selection import train_test_split as _tts
+        all_idx = np.arange(len(y))
+        idx_tv, idx_test = _tts(
+            all_idx, test_size=split_cfg.test_size, random_state=split_cfg.seed, stratify=y,
+        )
+        val_rel = split_cfg.val_size / (1.0 - split_cfg.test_size)
+        idx_train, idx_val = _tts(
+            idx_tv, test_size=val_rel, random_state=split_cfg.seed, stratify=y[idx_tv],
+        )
+        X_train, y_train = X[idx_train], y[idx_train]
+        X_val, y_val = X[idx_val], y[idx_val]
+        X_test, y_test = X[idx_test], y[idx_test]
+
         st.session_state.splits = {
             "train": (X_train, y_train),
             "val": (X_val, y_val),
             "test": (X_test, y_test),
             "split_cfg": split_cfg,
             "bal": bal,
+            "idx_train": idx_train,
+            "idx_val": idx_val,
+            "idx_test": idx_test,
         }
 
         history: list[dict[str, float]] = []
@@ -837,6 +862,12 @@ def tab_artifacts() -> None:
     out_dir = PROJECT_ROOT / "artifacts"
     out_dir.mkdir(exist_ok=True)
 
+    auto_imp = st.checkbox(
+        "Calcular permutation importance automaticamente se ausente",
+        value=True,
+        help="Garante que o relatorio nunca saia sem a secao 11. Usa amostra de 600 e 2 repeticoes.",
+    )
+
     if st.button("Gerar e salvar todos os artefatos", type="primary"):
         with st.spinner("Calculando scores no dataset completo..."):
             score_nn_full = predict_scores(model, X)
@@ -900,6 +931,65 @@ def tab_artifacts() -> None:
         )
 
         comp = compare_against_heuristic(y_test, scores_test, score_h_full[: len(y_test)])
+
+        if importance_top is None and auto_imp:
+            with st.spinner("Calculando permutation importance (amostra 600, 2 repeticoes)..."):
+                rng = np.random.default_rng(42)
+                sample_n = min(600, len(y_val))
+                idx = rng.choice(len(y_val), size=sample_n, replace=False)
+                importance_top = permutation_importance(
+                    model, X_val[idx], y_val[idx], names, metric="pr_auc", n_repeats=2,
+                )
+                st.session_state.importance_top = importance_top
+
+        with st.spinner("Coletando estatisticas detalhadas para o relatorio..."):
+            score_stats = score_distribution_stats(y_test, scores_test)
+            score_deciles = score_decile_table(y_test, scores_test)
+
+            idx_test_real = splits.get("idx_test")
+            if idx_test_real is not None:
+                df_test_aligned = df.iloc[idx_test_real].copy().reset_index(drop=True)
+            else:
+                df_test_aligned = df.iloc[: len(y_test)].copy().reset_index(drop=True)
+            errors_dict = top_errors(df_test_aligned, y_test, scores_test, threshold_opt, k=10)
+            all_errors = all_errors_separated(
+                df_test_aligned, y_test, scores_test, threshold_opt, keep_specs=False,
+            )
+
+            fp_csv = out_dir / "falsos_positivos_grupo_0.csv"
+            fn_csv = out_dir / "falsos_negativos_grupo_1.csv"
+            all_errors["fp_full_df"].to_csv(fp_csv, index=False, encoding="utf-8-sig")
+            all_errors["fn_full_df"].to_csv(fn_csv, index=False, encoding="utf-8-sig")
+            error_csv_paths = {
+                "fp_csv": str(fp_csv.relative_to(PROJECT_ROOT)),
+                "fn_csv": str(fn_csv.relative_to(PROJECT_ROOT)),
+            }
+
+            feat_stats = feature_summary_stats(X, names, top_k=20)
+            feat_corr = features_correlation_with_label(
+                X, df[LABEL_COLUMN_CANON].to_numpy().astype(np.float32), names, top_k=20,
+            )
+
+            preproc_summary = {
+                "config": preproc.config.to_dict(),
+                "top_classes": list(preproc.top_classes),
+            }
+
+            deltas = {
+                "ROC-AUC train-test": em_train.roc_auc - em_test_re.roc_auc,
+                "PR-AUC train-test": em_train.pr_auc - em_test_re.pr_auc,
+                "Recall train-test": em_train.recall - em_test_re.recall,
+                "F1 train-test": em_train.f1 - em_test_re.f1,
+            }
+
+            train_cfg_dict = train_cfg.to_dict() if hasattr(train_cfg, "to_dict") else dict(train_cfg.__dict__)
+            if train_result is not None:
+                train_cfg_dict.update(
+                    best_epoch=train_result.best_epoch,
+                    best_pr_auc_val=train_result.best_pr_auc_val,
+                    n_train_after_balancing=train_result.n_train_after_balancing,
+                )
+
         report_md = build_report(
             feature_names=names,
             balancing=bal,
@@ -913,10 +1003,28 @@ def tab_artifacts() -> None:
             threshold_policy=threshold_policy,
             dataset_report=df_report,
             importance_top=importance_top,
+            mlp_config=model.config.to_dict(),
+            train_config=train_cfg_dict,
+            history=list(st.session_state.history) if st.session_state.history else None,
+            preprocessing_summary=preproc_summary,
+            feature_stats=feat_stats,
+            feature_corr_with_label=feat_corr,
+            score_stats_test=score_stats,
+            score_deciles_test=score_deciles,
+            errors_test=errors_dict,
+            all_errors_test=all_errors,
+            deltas_train_val_test=deltas,
+            error_csv_paths=error_csv_paths,
         )
         save_report(report_md, out_dir / "report.md")
 
-        st.success("Artefatos salvos em " + str(out_dir))
+        st.success(
+            f"Artefatos salvos em {out_dir}. "
+            f"Lista completa de erros: {len(all_errors['grupo_0_errados'])} FPs (Grupo 0) "
+            f"e {len(all_errors['grupo_1_errados'])} FNs (Grupo 1) tambem em CSV."
+        )
+        with st.expander("Previa do relatorio gerado", expanded=False):
+            st.markdown(report_md)
 
     files = [
         out_dir / "brand_similarity_model_config.json",
@@ -925,6 +1033,8 @@ def tab_artifacts() -> None:
         out_dir / "enriched.parquet",
         out_dir / "brand_similarity_input_view_enriched.xlsx",
         out_dir / "report.md",
+        out_dir / "falsos_positivos_grupo_0.csv",
+        out_dir / "falsos_negativos_grupo_1.csv",
     ]
     for fp in files:
         if fp.exists():
