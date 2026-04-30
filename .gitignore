@@ -17,4 +17,5 @@ dist/
 
 # Dados/artefatos grandes ou gerados (ajuste conforme necessário)
 *.xlsx
+!dataframe_final_colidencias.xlsx
 
