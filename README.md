@@ -24,6 +24,28 @@ python -m pip install -U pip
 pip install -r requirements.txt
 ```
 
+### Opção rápida (scripts)
+
+PowerShell:
+
+```bash
+.\setup.ps1
+.\run.ps1
+```
+
+CMD / .bat:
+
+```bash
+setup.bat
+run.bat
+```
+
+Se o PowerShell bloquear a execução de scripts, rode (uma vez, no PowerShell):
+
+```bash
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
+
 ## Como rodar
 
 Inicie o servidor:
