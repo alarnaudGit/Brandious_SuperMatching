@@ -1,0 +1,370 @@
+[
+  {
+    "m1": "04",
+    "m2": "zero quarto",
+    "res": {
+      "driver": "Aproximação de Termos (Fuzzy)",
+      "final": 0.8233333333333334,
+      "vetores": {
+        "anagram": 1,
+        "fon": 0.6,
+        "fuzzy": 0.8333333333333334,
+        "orto": 0.8,
+        "token": 0.8333333333333334
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "axis consultoria",
+    "m2": "axis",
+    "res": {
+      "driver": "Inclusão Total de Termo",
+      "final": 0.7866666666666666,
+      "vetores": {
+        "anagram": 0.2666666666666667,
+        "fon": 0.33333333333333337,
+        "fuzzy": 1,
+        "orto": 0.2666666666666667,
+        "token": 1
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "barbatto",
+    "m2": "barbato",
+    "res": {
+      "driver": "Fonética (Som)",
+      "final": 0.1,
+      "vetores": {
+        "anagram": 1,
+        "fon": 1,
+        "fuzzy": 1,
+        "orto": 1,
+        "token": 1
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "caravvvela",
+    "m2": "caravela",
+    "res": {
+      "driver": "Fonética (Som)",
+      "final": 0.1,
+      "vetores": {
+        "anagram": 1,
+        "fon": 1,
+        "fuzzy": 1,
+        "orto": 1,
+        "token": 1
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "bar204",
+    "m2": "bar dois zero quatro",
+    "res": {
+      "driver": "Fonética (Som)",
+      "final": 1,
+      "vetores": {
+        "anagram": 1,
+        "fon": 1,
+        "fuzzy": 1,
+        "orto": 1,
+        "token": 1
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "2 irmãos 4",
+    "m2": "dois irmãos quatro",
+    "res": {
+      "driver": "Fonética (Som)",
+      "final": 1,
+      "vetores": {
+        "anagram": 1,
+        "fon": 1,
+        "fuzzy": 1,
+        "orto": 1,
+        "token": 1
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "Instituto Super Alfa Brandious",
+    "m2": "Super Brandious",
+    "res": {
+      "driver": "Inclusão Total de Termo",
+      "final": 0.8507625272331154,
+      "vetores": {
+        "anagram": 0.5185185185185186,
+        "fon": 0.47058823529411764,
+        "fuzzy": 1,
+        "orto": 0.5185185185185186,
+        "token": 1
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "Grupo Master Super Brandious",
+    "m2": "Super Brandious",
+    "res": {
+      "driver": "Inclusão Total de Termo",
+      "final": 0.8653333333333333,
+      "vetores": {
+        "anagram": 0.56,
+        "fon": 0.5333333333333333,
+        "fuzzy": 1,
+        "orto": 0.56,
+        "token": 1
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "Super BrandiousTech Avançada",
+    "m2": "Super Brandious",
+    "res": {
+      "driver": "Aproximação de Termos (Fuzzy)",
+      "final": 0.7610256410256411,
+      "vetores": {
+        "anagram": 0.5384615384615384,
+        "fon": 0.5333333333333333,
+        "fuzzy": 0.8571428571428572,
+        "orto": 0.5384615384615384,
+        "token": 0.8571428571428572
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "Super Center Brandious Solutions",
+    "m2": "Super Brandious",
+    "res": {
+      "driver": "Inclusão Total de Termo",
+      "final": 0.8436105476673428,
+      "vetores": {
+        "anagram": 0.48275862068965514,
+        "fon": 0.47058823529411764,
+        "fuzzy": 1,
+        "orto": 0.48275862068965514,
+        "token": 1
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "Super Instituto Brandious Tecnologia Avançada",
+    "m2": "Super Brandious",
+    "res": {
+      "driver": "Inclusão Total de Termo",
+      "final": 0.8016260162601626,
+      "vetores": {
+        "anagram": 0.3414634146341463,
+        "fon": 0.33333333333333337,
+        "fuzzy": 1,
+        "orto": 0.3414634146341463,
+        "token": 1
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "bionova",
+    "m2": "novabio",
+    "res": {
+      "driver": "Fonética (Som)",
+      "final": 0.00380952380952381,
+      "vetores": {
+        "anagram": 1,
+        "fon": 0.33333333333333337,
+        "fuzzy": 0.33333333333333337,
+        "orto": 0.1428571428571429,
+        "token": 0.33333333333333337
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "matriz",
+    "m2": "matrix",
+    "res": {
+      "driver": "Ortografia (Escrita)",
+      "final": 0.08250000000000002,
+      "vetores": {
+        "anagram": 0.8333333333333334,
+        "fon": 0.75,
+        "fuzzy": 0.8333333333333334,
+        "orto": 0.8333333333333334,
+        "token": 0.8333333333333334
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "pharmacia",
+    "m2": "farmácia",
+    "res": {
+      "driver": "Fonética (Som)",
+      "final": 0.09555555555555556,
+      "vetores": {
+        "anagram": 0.7777777777777778,
+        "fon": 1,
+        "fuzzy": 1,
+        "orto": 0.7777777777777778,
+        "token": 1
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "axys",
+    "m2": "axis consultoria",
+    "res": {
+      "driver": "Aproximação de Termos (Fuzzy)",
+      "final": 0.0007666666666666667,
+      "vetores": {
+        "anagram": 0.1333333333333333,
+        "fon": 0.33333333333333337,
+        "fuzzy": 1,
+        "orto": 0.19999999999999996,
+        "token": 1
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "axis",
+    "m2": "axis consultoria",
+    "res": {
+      "driver": "Inclusão Total de Termo",
+      "final": 0.7866666666666666,
+      "vetores": {
+        "anagram": 0.2666666666666667,
+        "fon": 0.33333333333333337,
+        "fuzzy": 1,
+        "orto": 0.2666666666666667,
+        "token": 1
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "Marca100",
+    "m2": "Marcacem",
+    "res": {
+      "driver": "Fonética (Som)",
+      "final": 0.9625,
+      "vetores": {
+        "anagram": 1,
+        "fon": 1,
+        "fuzzy": 0.625,
+        "orto": 1,
+        "token": 0.625
+      },
+      "via": "Cardinal (valor por extenso)"
+    }
+  },
+  {
+    "m1": "Marca100",
+    "m2": "Marcaum zero zero",
+    "res": {
+      "driver": "Ortografia (Escrita)",
+      "final": 0.9805555555555555,
+      "vetores": {
+        "anagram": 1,
+        "fon": 0.8888888888888888,
+        "fuzzy": 0.9166666666666666,
+        "orto": 1,
+        "token": 0.9166666666666666
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "Tech2024",
+    "m2": "Techdois mil e vinte quatro",
+    "res": {
+      "driver": "Fonética (Som)",
+      "final": 0.99,
+      "vetores": {
+        "anagram": 1,
+        "fon": 1,
+        "fuzzy": 0.9,
+        "orto": 1,
+        "token": 0.9
+      },
+      "via": "Cardinal (valor por extenso)"
+    }
+  },
+  {
+    "m1": "Super15",
+    "m2": "Superquinze",
+    "res": {
+      "driver": "Fonética (Som)",
+      "final": 0.9545454545454546,
+      "vetores": {
+        "anagram": 1,
+        "fon": 1,
+        "fuzzy": 0.5454545454545454,
+        "orto": 1,
+        "token": 0.5454545454545454
+      },
+      "via": "Cardinal (valor por extenso)"
+    }
+  },
+  {
+    "m1": "aki",
+    "m2": "aqui",
+    "res": {
+      "driver": "Fonética (Som)",
+      "final": 0.09000000000000001,
+      "vetores": {
+        "anagram": 0.5,
+        "fon": 1,
+        "fuzzy": 1,
+        "orto": 0.5,
+        "token": 1
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "zero quatro",
+    "m2": "04",
+    "res": {
+      "driver": "Fonética (Som)",
+      "final": 1,
+      "vetores": {
+        "anagram": 1,
+        "fon": 1,
+        "fuzzy": 1,
+        "orto": 1,
+        "token": 1
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "04",
+    "m2": "zero quatro",
+    "res": {
+      "driver": "Fonética (Som)",
+      "final": 1,
+      "vetores": {
+        "anagram": 1,
+        "fon": 1,
+        "fuzzy": 1,
+        "orto": 1,
+        "token": 1
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  }
+]

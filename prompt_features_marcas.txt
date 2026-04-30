@@ -1,0 +1,127 @@
+PROMPT PARA GERAR SCRIPT PYTHON DE FEATURES DE SIMILARIDADE ENTRE MARCAS
+
+Crie um script completo em Python para gerar um dataset de features de
+similaridade nominativa entre pares de marcas, com foco em posterior
+treinamento supervisionado de um modelo de classificação. O script não
+deve atribuir rótulo, apenas gerar todas as features e salvar em arquivo
+para posterior rotulagem manual.
+
+OBJETIVO Ler um arquivo contendo pares de nomes de marcas, calcular um
+conjunto robusto de features de similaridade e gerar um arquivo tabular
+contendo: - nomes originais das marcas - versões normalizadas - features
+numéricas e booleanas - colunas auxiliares para rotulagem humana
+
+ENTRADA Arquivo CSV ou XLSX contendo ao menos: marca_a marca_b
+
+O caminho do arquivo deve ser passado por argumento de linha de comando.
+
+SAÍDA Gerar CSV (e opcionalmente XLSX) contendo:
+
+Colunas originais: marca_a_original marca_b_original
+
+Normalizações: marca_a_lower marca_b_lower marca_a_sem_acentos
+marca_b_sem_acentos marca_a_alnum marca_b_alnum marca_a_alpha_only
+marca_b_alpha_only marca_a_sem_espacos marca_b_sem_espacos
+marca_a_repeat_compressed marca_b_repeat_compressed marca_a_fonetica
+marca_b_fonetica
+
+Apoio à rotulagem: tokens_a tokens_b tokens_a_sorted tokens_b_sorted
+split_candidates_a split_candidates_b
+
+NORMALIZAÇÃO Criar funções para: - lowercase - remoção de acentos -
+remoção de pontuação - apenas alfanumérico - apenas letras - remoção de
+espaços - compressão de repetição de letras - tokenização - tokens
+ordenados
+
+Tratar separadores: - hífen - underscore - barra - ponto - vírgula -
+apóstrofo
+
+FONÉTICA Implementar função fonética heurística para português:
+
+Regras mínimas: ph → f y → i w → v ou u remover h mudo comprimir
+consoantes repetidas
+
+aproximações: c k q s z x ç ss g j
+
+Remover acentos antes das regras.
+
+TOKENIZAÇÃO Gerar tokens por espaço e separadores.
+
+Implementar tentativa de decomposição heurística para casos como:
+bionovo ↔ bio novo novobio ↔ novo bio autodias ↔ auto dias
+
+Permitir lista opcional de radicais: bio novo auto max plus prime tech
+smart flex vida car
+
+FEATURES
+
+TAMANHO len_a_original len_b_original len_ratio_min_max len_diff_abs
+num_tokens_a num_tokens_b token_count_diff
+
+IGUALDADE E CONTENÇÃO exact_match_original exact_match_lower
+exact_match_sem_acentos exact_match_alnum exact_match_sem_espacos
+a_contido_em_b b_contido_em_a containment_any
+
+DISTÂNCIAS DE STRING levenshtein_distance levenshtein_similarity_norm
+jaro_similarity jaro_winkler_similarity difflib_ratio
+
+NGRAMS Gerar bigramas, trigramas e 4‑gramas.
+
+Features: char_bigram_jaccard char_trigram_jaccard char_4gram_jaccard
+char_bigram_overlap_count char_trigram_overlap_count
+char_4gram_overlap_count char_bigram_dice char_trigram_dice
+char_4gram_dice
+
+TFIDF COSINE char_tfidf_cosine_2gram char_tfidf_cosine_3gram
+char_tfidf_cosine_2_4gram
+
+FONÉTICA fonetica_exact_match fonetica_levenshtein_distance
+fonetica_levenshtein_similarity fonetica_jaro_winkler
+fonetica_bigram_jaccard fonetica_trigram_jaccard
+
+TOKENS token_overlap_count token_jaccard token_dice
+token_containment_ratio_a_in_b token_containment_ratio_b_in_a
+all_tokens_a_in_b all_tokens_b_in_a token_sort_exact_match
+token_sort_joined_equal token_set_equal shared_longest_token_len
+
+REORDENAÇÃO reordered_tokens_exact_match same_token_multiset_flag
+split_based_overlap_score split_based_jaccard split_based_reorder_match
+split_candidate_any_match_flag
+
+REPETIÇÕES repeat_compressed_exact_match
+repeat_compressed_levenshtein_similarity repeat_compressed_jaro_winkler
+
+NÚMEROS digits_a digits_b digit_sequence_equal digit_jaccard
+one_has_digits_other_not
+
+FEATURES AGREGADAS max_similarity_among_core_metrics
+mean_similarity_core_metrics min_similarity_core_metrics
+strong_match_rule_count
+
+REQUISITOS TÉCNICOS
+
+Bibliotecas: pandas numpy scikit-learn rapidfuzz unidecode
+
+Interface CLI com argparse: –input –output –sheet –col-a –col-b
+–radicals-file –export-xlsx
+
+Robustez: - tratar valores nulos - evitar divisão por zero - fallback
+quando biblioteca faltar
+
+Organização: funções separadas para: normalização fonética tokenização
+ngrams métricas geração de features processamento do dataset
+
+Criar coluna vazia: label
+
+Criar também: pair_id
+
+EXTRAS
+
+Mostrar no terminal: - pares processados - colunas geradas - caminho do
+arquivo
+
+Gerar JSON opcional documentando cada feature.
+
+Bloco principal: if name == “main”:
+
+Incluir exemplo de execução no final.

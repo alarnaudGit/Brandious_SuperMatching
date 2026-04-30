@@ -1,0 +1,578 @@
+[
+  {
+    "m1": "CEARENSE BEM",
+    "m2": "EMPREENDESER",
+    "res": {
+      "driver": "Ortografia (Escrita)",
+      "final": 0.043939393939393945,
+      "vetores": {
+        "anagram": 0.5454545454545454,
+        "fon": 0.25,
+        "fuzzy": 0.41666666666666663,
+        "orto": 0.4545454545454546,
+        "token": 0.41666666666666663
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "APRIMORECLASS EDUCAÇÃO AVANÇADA",
+    "m2": "AmarElos Psicologia",
+    "res": {
+      "driver": "Aproximação de Termos (Fuzzy)",
+      "final": 0.04567226890756303,
+      "vetores": {
+        "anagram": 0.3928571428571429,
+        "fon": 0.3529411764705882,
+        "fuzzy": 0.5,
+        "orto": 0.3214285714285714,
+        "token": 0.5
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "AMORMECI",
+    "m2": "AmarElos Psicologia",
+    "res": {
+      "driver": "Aproximação de Termos (Fuzzy)",
+      "final": 0.06666666666666667,
+      "vetores": {
+        "anagram": 0.38888888888888884,
+        "fon": 0.4,
+        "fuzzy": 0.8,
+        "orto": 0.2777777777777778,
+        "token": 0.8
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "AMOMECI",
+    "m2": "AmarElos Psicologia",
+    "res": {
+      "driver": "Aproximação de Termos (Fuzzy)",
+      "final": 0.05111111111111111,
+      "vetores": {
+        "anagram": 0.33333333333333337,
+        "fon": 0.30000000000000004,
+        "fuzzy": 0.6,
+        "orto": 0.2777777777777778,
+        "token": 0.6
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "AMOMERCI",
+    "m2": "AmarElos Psicologia",
+    "res": {
+      "driver": "Aproximação de Termos (Fuzzy)",
+      "final": 0.051666666666666666,
+      "vetores": {
+        "anagram": 0.38888888888888884,
+        "fon": 0.30000000000000004,
+        "fuzzy": 0.6,
+        "orto": 0.2777777777777778,
+        "token": 0.6
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "CAMARÕES",
+    "m2": "AmarElos Psicologia",
+    "res": {
+      "driver": "Aproximação de Termos (Fuzzy)",
+      "final": 0.052222222222222225,
+      "vetores": {
+        "anagram": 0.4444444444444444,
+        "fon": 0.30000000000000004,
+        "fuzzy": 0.6,
+        "orto": 0.2777777777777778,
+        "token": 0.6
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "BUSCAULA",
+    "m2": "AmarElos Psicologia",
+    "res": {
+      "driver": "Aproximação de Termos (Fuzzy)",
+      "final": 0.04888888888888889,
+      "vetores": {
+        "anagram": 0.2222222222222222,
+        "fon": 0.30000000000000004,
+        "fuzzy": 0.6,
+        "orto": 0.16666666666666663,
+        "token": 0.6
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "CAMARÃO COCO BRASIL",
+    "m2": "AmarElos Psicologia",
+    "res": {
+      "driver": "Aproximação de Termos (Fuzzy)",
+      "final": 0.03988888888888889,
+      "vetores": {
+        "anagram": 0.5555555555555556,
+        "fon": 0.30000000000000004,
+        "fuzzy": 0.4,
+        "orto": 0.33333333333333337,
+        "token": 0.4
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "CEARENSE OFTALMOLOGIA",
+    "m2": "AmarElos Psicologia",
+    "res": {
+      "driver": "Ortografia (Escrita)",
+      "final": 0.48727272727272725,
+      "vetores": {
+        "anagram": 0.65,
+        "fon": 0.2727272727272727,
+        "fuzzy": 0.45,
+        "orto": 0.5,
+        "token": 0.45
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "MORORÓ PARATODOS - BR",
+    "m2": "EMPREENDESER",
+    "res": {
+      "driver": "Fonética (Som)",
+      "final": 0.4588235294117647,
+      "vetores": {
+        "anagram": 0.2941176470588235,
+        "fon": 0.5,
+        "fuzzy": 0.5,
+        "orto": 0.2941176470588235,
+        "token": 0.5
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "SIMONE MENDES",
+    "m2": "EMPREENDESER",
+    "res": {
+      "driver": "Fonética (Som)",
+      "final": 0.4916666666666667,
+      "vetores": {
+        "anagram": 0.5833333333333333,
+        "fon": 0.5,
+        "fuzzy": 0.5,
+        "orto": 0.33333333333333337,
+        "token": 0.5
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "AMOMERCI",
+    "m2": "AEGRO",
+    "res": {
+      "driver": "Fonética (Som)",
+      "final": 0.03950000000000001,
+      "vetores": {
+        "anagram": 0.5,
+        "fon": 0.4,
+        "fuzzy": 0.4,
+        "orto": 0.25,
+        "token": 0.4
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "carmais",
+    "m2": "DI SAMPA",
+    "res": {
+      "driver": "Aproximação de Termos (Fuzzy)",
+      "final": 0.029642857142857137,
+      "vetores": {
+        "anagram": 0.7142857142857143,
+        "fon": 0.25,
+        "fuzzy": 0.2857142857142857,
+        "orto": 0,
+        "token": 0.2857142857142857
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "FORROBODÓ",
+    "m2": "ORBID",
+    "res": {
+      "driver": "Fonética (Som)",
+      "final": 0.7,
+      "vetores": {
+        "anagram": 0.5,
+        "fon": 0.75,
+        "fuzzy": 0.75,
+        "orto": 0.5,
+        "token": 0.75
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "BECO DO RISO",
+    "m2": "CLUBE DO DOG",
+    "res": {
+      "driver": "Aproximação de Termos (Fuzzy)",
+      "final": 0.4755555555555555,
+      "vetores": {
+        "anagram": 0.5,
+        "fon": 0.16666666666666663,
+        "fuzzy": 0.5555555555555556,
+        "orto": 0.19999999999999996,
+        "token": 0.5555555555555556
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "carmais",
+    "m2": "RAMUS",
+    "res": {
+      "driver": "Fonética (Som)",
+      "final": 0.6857142857142857,
+      "vetores": {
+        "anagram": 0.4285714285714286,
+        "fon": 0.75,
+        "fuzzy": 0.75,
+        "orto": 0.4285714285714286,
+        "token": 0.75
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "SHOW DAS CALCINHAS",
+    "m2": "Casa dos Salgados Pb",
+    "res": {
+      "driver": "Aproximação de Termos (Fuzzy)",
+      "final": 0.056525846702317285,
+      "vetores": {
+        "anagram": 0.5294117647058824,
+        "fon": 0.4545454545454546,
+        "fuzzy": 0.6333333333333333,
+        "orto": 0.23529411764705888,
+        "token": 0.6333333333333333
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "PAZ & AMOR",
+    "m2": "PEZÃO",
+    "res": {
+      "driver": "Aproximação de Termos (Fuzzy)",
+      "final": 0.08542857142857144,
+      "vetores": {
+        "anagram": 0.5714285714285714,
+        "fon": 0.4,
+        "fuzzy": 1,
+        "orto": 0.5714285714285714,
+        "token": 1
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "SANAUTO",
+    "m2": "SANTO TERÇO",
+    "res": {
+      "driver": "Aproximação de Termos (Fuzzy)",
+      "final": 0.085,
+      "vetores": {
+        "anagram": 0.5,
+        "fon": 0.5,
+        "fuzzy": 1,
+        "orto": 0.5,
+        "token": 1
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "CAMARÕES",
+    "m2": "@ NATWAY E-COMMERCE",
+    "res": {
+      "driver": "Aproximação de Termos (Fuzzy)",
+      "final": 0.08357142857142857,
+      "vetores": {
+        "anagram": 0.5,
+        "fon": 0.5714285714285714,
+        "fuzzy": 1,
+        "orto": 0.2857142857142857,
+        "token": 1
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "SIARÁ",
+    "m2": "Jacu da Serra",
+    "res": {
+      "driver": "Aproximação de Termos (Fuzzy)",
+      "final": 0.008100000000000001,
+      "vetores": {
+        "anagram": 0.4,
+        "fon": 0.4,
+        "fuzzy": 1,
+        "orto": 0.30000000000000004,
+        "token": 1
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "JULIA DUMONT",
+    "m2": "Jelou",
+    "res": {
+      "driver": "Aproximação de Termos (Fuzzy)",
+      "final": 0.007969696969696972,
+      "vetores": {
+        "anagram": 0.36363636363636365,
+        "fon": 0.33333333333333337,
+        "fuzzy": 1,
+        "orto": 0.2727272727272727,
+        "token": 1
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "E.timer",
+    "m2": "EWE",
+    "res": {
+      "driver": "Aproximação de Termos (Fuzzy)",
+      "final": 0.007916666666666667,
+      "vetores": {
+        "anagram": 0.33333333333333337,
+        "fon": 0.25,
+        "fuzzy": 1,
+        "orto": 0.33333333333333337,
+        "token": 1
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "AQUA VILLE",
+    "m2": "AOKEYO",
+    "res": {
+      "driver": "Aproximação de Termos (Fuzzy)",
+      "final": 0.07875,
+      "vetores": {
+        "anagram": 0.25,
+        "fon": 0.5,
+        "fuzzy": 1,
+        "orto": 0.125,
+        "token": 1
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "MISS NINA",
+    "m2": "MECÊ",
+    "res": {
+      "driver": "Aproximação de Termos (Fuzzy)",
+      "final": 0.07785714285714286,
+      "vetores": {
+        "anagram": 0.1428571428571429,
+        "fon": 0.5,
+        "fuzzy": 1,
+        "orto": 0.1428571428571429,
+        "token": 1
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "BAR DAS COLEGUINHAS",
+    "m2": "BAURA",
+    "res": {
+      "driver": "Aproximação de Termos (Fuzzy)",
+      "final": 0.007751633986928106,
+      "vetores": {
+        "anagram": 0.2941176470588235,
+        "fon": 0.2222222222222222,
+        "fuzzy": 1,
+        "orto": 0.23529411764705888,
+        "token": 1
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "CASAS ALVES",
+    "m2": "A SALA É SUA",
+    "res": {
+      "driver": "Fonética (Som)",
+      "final": 0.04425000000000001,
+      "vetores": {
+        "anagram": 0.7,
+        "fon": 0.4285714285714286,
+        "fuzzy": 0.325,
+        "orto": 0.4,
+        "token": 0.325
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "s27",
+    "m2": "A SALA É SUA",
+    "res": {
+      "driver": "Aproximação de Termos (Fuzzy)",
+      "final": 0.052000000000000005,
+      "vetores": {
+        "anagram": 0.2222222222222222,
+        "fon": 0.19999999999999996,
+        "fuzzy": 0.6666666666666666,
+        "orto": 0.11111111111111116,
+        "token": 0.6666666666666666
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "SIARÁ",
+    "m2": "ARROZ SERRA VERDE",
+    "res": {
+      "driver": "Aproximação de Termos (Fuzzy)",
+      "final": 0.007788461538461539,
+      "vetores": {
+        "anagram": 0.3076923076923077,
+        "fon": 0.25,
+        "fuzzy": 1,
+        "orto": 0.23076923076923073,
+        "token": 1
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "COSTERA",
+    "m2": "J A CASTRO",
+    "res": {
+      "driver": "Aproximação de Termos (Fuzzy)",
+      "final": 0.08791666666666667,
+      "vetores": {
+        "anagram": 0.75,
+        "fon": 0.6666666666666667,
+        "fuzzy": 1,
+        "orto": 0.375,
+        "token": 1
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "CEARENSE DO BEM",
+    "m2": "BM",
+    "res": {
+      "driver": "Aproximação de Termos (Fuzzy)",
+      "final": 0.007593406593406593,
+      "vetores": {
+        "anagram": 0.15384615384615385,
+        "fon": 0.2857142857142857,
+        "fuzzy": 1,
+        "orto": 0.15384615384615385,
+        "token": 1
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "MARES AO MAR",
+    "m2": "AEI",
+    "res": {
+      "driver": "Aproximação de Termos (Fuzzy)",
+      "final": 0.007566666666666666,
+      "vetores": {
+        "anagram": 0.19999999999999996,
+        "fon": 0.16666666666666663,
+        "fuzzy": 1,
+        "orto": 0.19999999999999996,
+        "token": 1
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "TVDIÁRIO.COM.BR",
+    "m2": "BAURA",
+    "res": {
+      "driver": "Aproximação de Termos (Fuzzy)",
+      "final": 0.007480769230769232,
+      "vetores": {
+        "anagram": 0.15384615384615385,
+        "fon": 0.25,
+        "fuzzy": 1,
+        "orto": 0.07692307692307687,
+        "token": 1
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "amar.elo SAÚDE MENTAL",
+    "m2": "ÉOLO",
+    "res": {
+      "driver": "Aproximação de Termos (Fuzzy)",
+      "final": 0.007459595959595959,
+      "vetores": {
+        "anagram": 0.16666666666666663,
+        "fon": 0.18181818181818177,
+        "fuzzy": 1,
+        "orto": 0.11111111111111116,
+        "token": 1
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "SKINA DO AÇAI",
+    "m2": "4HD",
+    "res": {
+      "driver": "Aproximação de Termos (Fuzzy)",
+      "final": 0.04522727272727272,
+      "vetores": {
+        "anagram": 0.18181818181818177,
+        "fon": 0.16666666666666663,
+        "fuzzy": 0.5833333333333333,
+        "orto": 0.09090909090909094,
+        "token": 0.5833333333333333
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  },
+  {
+    "m1": "LA MAISON MEU PASTELZIN",
+    "m2": "LÉO",
+    "res": {
+      "driver": "Aproximação de Termos (Fuzzy)",
+      "final": 0.0073409090909090915,
+      "vetores": {
+        "anagram": 0.15000000000000002,
+        "fon": 0.09090909090909094,
+        "fuzzy": 1,
+        "orto": 0.09999999999999998,
+        "token": 1
+      },
+      "via": "Literal (dígito por dígito)"
+    }
+  }
+]

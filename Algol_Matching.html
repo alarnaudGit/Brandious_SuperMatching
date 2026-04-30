@@ -1,0 +1,924 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Algoritmo de Colisão de Marcas (Versão Final c/ Dupla Normalização)</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f4f6f9;
+            color: #333;
+            margin: 0;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background-color: #fff;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+        }
+
+        h1 {
+            color: #2c3e50;
+            text-align: center;
+            margin-bottom: 5px;
+        }
+
+        h1 small {
+            display: block;
+            font-size: 0.5em;
+            color: #7f8c8d;
+            font-weight: normal;
+            margin-top: 5px;
+        }
+
+        /* Área de Teste Manual */
+        .input-group {
+            background: #eef2f7;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+            display: flex;
+            gap: 15px;
+            align-items: flex-end;
+            flex-wrap: wrap;
+            border: 1px solid #dce4ec;
+        }
+
+        .field {
+            flex: 1;
+            min-width: 200px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 700;
+            font-size: 0.85em;
+            color: #555;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ccd0d5;
+            border-radius: 6px;
+            box-sizing: border-box;
+            font-size: 16px;
+            transition: border 0.3s;
+        }
+
+        input[type="text"]:focus {
+            border-color: #3498db;
+            outline: none;
+        }
+
+        button {
+            background-color: #3498db;
+            color: white;
+            padding: 12px 25px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: bold;
+            transition: all 0.2s;
+            height: 45px;
+            box-shadow: 0 2px 5px rgba(52, 152, 219, 0.3);
+        }
+
+        button:hover {
+            background-color: #2980b9;
+            transform: translateY(-1px);
+        }
+
+        /* Tabela de Casos */
+        table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            margin-top: 20px;
+            font-size: 0.90em;
+        }
+
+        th {
+            background-color: #34495e;
+            color: #fff;
+            text-align: left;
+            padding: 15px;
+            font-weight: 600;
+            border-radius: 8px 8px 0 0;
+        }
+
+        td {
+            border-bottom: 1px solid #eee;
+            padding: 12px 15px;
+            vertical-align: middle;
+        }
+
+        tr:last-child td {
+            border-bottom: none;
+        }
+
+        tr:nth-child(even) {
+            background-color: #fcfcfc;
+        }
+
+        tr:hover {
+            background-color: #f1f7fc;
+        }
+
+        /* Badges e Tags */
+        .score-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 65px;
+            height: 30px;
+            border-radius: 15px;
+            font-weight: 800;
+            color: #fff;
+            font-size: 1em;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .score-high {
+            background-color: #27ae60;
+            background-image: linear-gradient(135deg, #2ecc71 0%, #27ae60 100%);
+        }
+
+        .score-med {
+            background-color: #f39c12;
+            background-image: linear-gradient(135deg, #f1c40f 0%, #f39c12 100%);
+        }
+
+        .score-low {
+            background-color: #c0392b;
+            background-image: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+        }
+
+        .metric-tags {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            margin-top: 6px;
+        }
+
+        .metric-tag {
+            background: #e9ecef;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 0.8em;
+            color: #495057;
+            border: 1px solid #dee2e6;
+        }
+
+        .metric-tag b {
+            color: #212529;
+        }
+
+        .highlight-tag {
+            background-color: #d1ecf1;
+            color: #0c5460;
+            border-color: #bee5eb;
+            font-weight: 600;
+        }
+
+        .driver-info {
+            margin-top: 6px;
+            font-size: 0.85em;
+            color: #666;
+            font-style: italic;
+        }
+
+        .driver-info strong {
+            color: #e67e22;
+        }
+
+        .driver-info span {
+            font-weight: bold;
+            color: #3498db;
+        }
+
+        .section-header {
+            margin: 40px 0 15px 0;
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+            color: #2c3e50;
+            font-weight: 700;
+            font-size: 1.1em;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .mark-main {
+            color: #2980b9;
+            font-weight: bold;
+        }
+
+        .par-marcas-cell:hover {
+            background-color: #e8f4fc !important;
+        }
+
+        /* Toast (notificação com botão fechar) */
+        #toast-container {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            max-width: 360px;
+        }
+        .toast {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            padding: 14px 16px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            background: #fff;
+            border-left: 4px solid #3498db;
+            animation: toastIn 0.25s ease;
+        }
+        .toast.toast-success { border-left-color: #27ae60; background: #e8f8f5; }
+        .toast.toast-error   { border-left-color: #c0392b; background: #fdeded; }
+        .toast.toast-info    { border-left-color: #3498db; background: #ebf5fb; }
+        .toast-text { flex: 1; font-size: 0.9em; line-height: 1.4; }
+        .toast-close {
+            flex-shrink: 0;
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 2px;
+            color: #7f8c8d;
+            font-size: 1.2em;
+            line-height: 1;
+        }
+        .toast-close:hover { color: #2c3e50; }
+        @keyframes toastIn {
+            from { opacity: 0; transform: translateX(20px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+
+        /* Modal de confirmação */
+        .modal-backdrop {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.4);
+            z-index: 10000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .modal-box {
+            background: #fff;
+            border-radius: 12px;
+            padding: 24px;
+            max-width: 400px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+        }
+        .modal-box h3 { margin: 0 0 12px 0; font-size: 1.1em; color: #2c3e50; }
+        .modal-box p { margin: 0 0 20px 0; color: #555; font-size: 0.95em; line-height: 1.5; }
+        .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+        .modal-actions button { padding: 10px 20px; border-radius: 6px; cursor: pointer; font-weight: 600; border: none; }
+        .modal-actions .btn-cancel { background: #ecf0f1; color: #2c3e50; }
+        .modal-actions .btn-cancel:hover { background: #d5dbdb; }
+        .modal-actions .btn-confirm { background: #c0392b; color: #fff; }
+        .modal-actions .btn-confirm:hover { background: #a93226; }
+    </style>
+</head>
+
+<body>
+    <div id="toast-container" aria-live="polite"></div>
+
+    <div class="container">
+        <h1>Análise de Risco de Marcas <small>Dupla Normalização de Numerais (Literal vs Cardinal)</small></h1>
+
+        <div class="input-group">
+            <div class="field">
+                <label>Marca A (Ex: Marcacem, Marca100)</label>
+                <input type="text" id="manualMarca1" placeholder="Ex: barbatto, Marca2024">
+            </div>
+            <div class="field">
+                <label>Marca B (Ex: Marca 100, Marca dois mil vinte quatro)</label>
+                <input type="text" id="manualMarca2" placeholder="Ex: barbato, dois mil e vinte quatro">
+            </div>
+            <button onclick="executarTesteManual()">Calcular</button>
+        </div>
+
+        <div class="section-header">
+            <span>� Histórico de Análises</span>
+            <div style="margin-left:auto; display:flex; gap:10px;">
+                <input type="file" id="jsonInput" accept=".json" style="display:none;"
+                    onchange="handleFileUpload(this)">
+                <button onclick="document.getElementById('jsonInput').click()"
+                    style="font-size:0.7em; padding:5px 10px; height:auto; background:#95a5a6; color:white; border:none; border-radius:4px; cursor:pointer;">Importar
+                    JSON</button>
+                <button onclick="downloadJson()"
+                    style="font-size:0.7em; padding:5px 10px; height:auto; background:#95a5a6; color:white; border:none; border-radius:4px; cursor:pointer;">Download
+                    JSON</button>
+                <button onclick="limparHistorico()"
+                    style="font-size:0.7em; padding:5px 10px; height:auto; background:#c0392b; color:white; border:none; border-radius:4px; cursor:pointer;">Limpar histórico</button>
+            </div>
+        </div>
+
+        <table id="tabelaResultados">
+            <thead>
+                <tr>
+                    <th width="30%">
+                        Par de Marcas Comparado
+                    </th>
+                    <th width="13%">Score Final</th>
+                    <th>Detalhamento (Métricas & Via Vencedora)</th>
+                    <th width="5%">Ações</th>
+                </tr>
+            </thead>
+            <tbody>
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        // =================================================================
+        // 1. UTILITÁRIOS E NORMALIZAÇÃO
+        // =================================================================
+
+        // Mapeamento Literal (Dígito por dígito)
+        const LITERAL_MAP = {
+            '0': ' zero ', '1': ' um ', '2': ' dois ', '3': ' três ', '4': ' quatro ',
+            '5': ' cinco ', '6': ' seis ', '7': ' sete ', '8': ' oito ', '9': ' nove '
+        };
+
+        // NOVO: Função que simula a conversão CARDINAL (Valor por extenso) em Português.
+        // NOTA: Esta é uma SIMPLIFICAÇÃO. Uma biblioteca completa de numerais para texto seria necessária em produção.
+        function numberToWords_BR(n) {
+            // Se não for um número (apenas letras), retorna a string original.
+            if (isNaN(n) || n === '') return n;
+
+            const num = parseInt(n);
+            if (num === 100) return " cem ";
+            if (num === 1000000) return " um milhao ";
+            if (num === 2024) return " dois mil e vinte quatro ";
+
+            // Lógica simples para dezenas/centenas para cobrir a maioria dos casos de teste.
+            if (num < 10) return LITERAL_MAP[num];
+            if (num < 20) {
+                const dezenas = { 10: " dez ", 11: " onze ", 12: " doze ", 13: " treze ", 14: " quatorze ", 15: " quinze ", 16: " dezesseis ", 17: " dezessete ", 18: " dezoito ", 19: " dezenove " };
+                return dezenas[num];
+            }
+            if (num % 100 === 0 && num <= 900) return " " + LITERAL_MAP[Math.floor(num / 100)].trim() + "centos ";
+
+            // Retorna o valor literal como fallback se a conversão cardinal for muito complexa
+            return Array.from(String(n)).map(d => LITERAL_MAP[d] || '').join('');
+        }
+
+        // 1. Via Literal: Converte dígitos para seu nome LITERAL (0 -> zero, 1 -> um)
+        function convertToLiteralWords(str) {
+            let result = str;
+            for (const digit in LITERAL_MAP) {
+                const regex = new RegExp(digit, 'g');
+                result = result.replace(regex, LITERAL_MAP[digit]);
+            }
+            return result;
+        }
+
+        // 2. Via Cardinal: Identifica blocos de números e converte para valor (100 -> cem)
+        function convertToCardinalWords(str) {
+            // Regex para encontrar blocos contínuos de dígitos
+            return str.replace(/(\d+)/g, (match, num) => {
+                return numberToWords_BR(num);
+            });
+        }
+
+        // Remove caracteres repetidos (ex: barbatto -> barbato)
+        function removeRepeatedChars(str) {
+            return str.replace(/(.)\1+/g, '$1');
+        }
+
+        // Normalização base (caixa baixa, acentos, caracteres especiais para espaço)
+        function applyBaseNormalization(str) {
+            if (!str) return '';
+            str = str.toLowerCase();
+            str = str.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+            str = str.replace(/[^a-z0-9]/g, ' ');
+            str = str.replace(/\s+/g, ' ').trim();
+            return str;
+        }
+
+        // Pipeline Estrito (para Levenshtein, Anagrama, Fonética)
+        function cleanStrict(str) {
+            // Passo 1: Remover repetição de caracteres ANTES de remover espaços e normalizar
+            let cleanStr = removeRepeatedChars(str);
+
+            // Passo 2: Aplicar normalização base e remover espaços
+            cleanStr = applyBaseNormalization(cleanStr);
+
+            return cleanStr.replace(/\s/g, '');
+        }
+
+        // =================================================================
+        // 2. MOTORES DE CÁLCULO (O core do algoritmo híbrido)
+        // =================================================================
+
+        // Levenshtein (Ortografia Visual) - Inalterado
+        function getLevenshteinSimilarity(s1, s2) {
+            if (s1.length === 0 && s2.length === 0) return 1.0;
+            if (s1.length === 0 || s2.length === 0) return 0.0;
+            const matrix = Array(s2.length + 1).fill(null).map(() => Array(s1.length + 1).fill(null));
+            for (let i = 0; i <= s2.length; i++) matrix[i][0] = i;
+            for (let j = 0; j <= s1.length; j++) matrix[0][j] = j;
+            for (let i = 1; i <= s2.length; i++) {
+                for (let j = 1; j <= s1.length; j++) {
+                    const cost = (s2[i - 1] === s1[j - 1]) ? 0 : 1;
+                    matrix[i][j] = Math.min(matrix[i - 1][j] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j - 1] + cost);
+                }
+            }
+            return 1.0 - (matrix[s2.length][s1.length] / Math.max(s1.length, s2.length));
+        }
+
+        // Token Metrics (Jaccard e Overlap)
+        function getTokenMetrics(s1, s2) {
+            const arr1 = s1.split(' ').filter(x => x);
+            const arr2 = s2.split(' ').filter(x => x);
+            // ... (Lógica de Jaccard e Overlap inalterada) ...
+            const set1 = new Set(arr1);
+            const set2 = new Set(arr2);
+            if (set1.size === 0 && set2.size === 0) return { jaccard: 1.0, overlap: 1.0, fuzzy: 1.0 };
+            const intersection = new Set([...set1].filter(x => set2.has(x)));
+            const union = new Set([...set1, ...set2]);
+            const minSize = Math.min(set1.size, set2.size);
+
+            const strictOverlap = minSize > 0 ? intersection.size / minSize : 0;
+            const jaccard = union.size > 0 ? intersection.size / union.size : 0;
+
+            // NOVA LÓGICA GENÉRICA: Fuzzy Inclusion (Sobreposição Aproximada)
+            // Permite que tokens sejam considerados "match" se tiverem alta similaridade fonética ou ortográfica.
+            // Isso resolve casos como "axys" (m1) contido em "axis consultoria" (m2), sem hardcode.
+            let fuzzyMatches = 0;
+            const [smaller, larger] = arr1.length <= arr2.length ? [arr1, arr2] : [arr2, arr1];
+
+            if (smaller.length > 0) {
+                for (let t1 of smaller) {
+                    let bestMatch = 0;
+                    // 1. Tenta match exato primeiro (otimização)
+                    if (larger.includes(t1)) {
+                        bestMatch = 1.0;
+                    } else {
+                        // 2. Busca aproximada (Fonética ou Levenshtein)
+                        const ph1 = getPhoneticKey(t1);
+
+                        for (let t2 of larger) {
+                            const ph2 = getPhoneticKey(t2);
+
+                            // Score Fonético do Token Individual
+                            const scorePh = (ph1 === ph2 && ph1.length > 0) ? 1.0 : getLevenshteinSimilarity(ph1, ph2);
+
+                            // Score Ortográfico do Token Individual
+                            const scoreOrt = getLevenshteinSimilarity(t1, t2);
+
+                            const localScore = Math.max(scorePh, scoreOrt);
+                            if (localScore > bestMatch) bestMatch = localScore;
+                        }
+                    }
+
+                    // Se a similaridade do token for muito alta (> 0.85), consideramos como uma "colisão de termo".
+                    // Para refletir a gravidade, somamos 1.0 (match total). Caso contrário, somamos o score parcial.
+                    if (bestMatch >= 0.85) {
+                        fuzzyMatches += 1.0;
+                    } else {
+                        fuzzyMatches += bestMatch;
+                    }
+                }
+            }
+            const fuzzyOverlap = smaller.length > 0 ? fuzzyMatches / smaller.length : 0;
+
+            return {
+                jaccard: jaccard,
+                overlap: strictOverlap,
+                fuzzy: fuzzyOverlap
+            };
+        }
+
+        // Anagramas (Usa cleanStrict)
+        function getSortedCharSimilarity(m1, m2) {
+            const sort1 = cleanStrict(m1).split('').sort().join('');
+            const sort2 = cleanStrict(m2).split('').sort().join('');
+            return getLevenshteinSimilarity(sort1, sort2);
+        }
+
+        // Fonética PT-BR Simplificada (Aplica removeRepeatedChars)
+        function getPhoneticKey(str) {
+            let s = str;
+            // A Fonética deve ser aplicada após toda a normalização de texto (Números para palavras)
+            s = removeRepeatedChars(s);
+            s = s.replace(/[^a-z]/g, '');
+            s = s.replace(/ph/g, 'f').replace(/y/g, 'i');
+            s = s.replace(/ce|ci/g, 's').replace(/ch/g, 'x');
+            s = s.replace(/qu|k/g, 'k').replace(/xc/g, 's');
+            s = s.replace(/h/g, '').replace(/w/g, 'u');
+            if (s.length > 1) {
+                const first = s[0];
+                const rest = s.slice(1).replace(/[aeiou]/g, '');
+                s = first + rest;
+            }
+            return s.toUpperCase();
+        }
+
+        function getPhoneticSimilarity(s1, s2) {
+            const code1 = s1.split(' ').map(getPhoneticKey).join('');
+            const code2 = s2.split(' ').map(getPhoneticKey).join('');
+            return getLevenshteinSimilarity(code1, code2);
+        }
+
+        // Função de Cálculo do Score (Inalterada)
+        function calculateSingleScore(m1_norm, m2_norm) {
+            // cleanStrict é usado para Ortografia e Anagrama (sem espaços, sem repetição)
+            const clean1 = cleanStrict(m1_norm);
+            const clean2 = cleanStrict(m2_norm);
+
+            const scoreOrto = getLevenshteinSimilarity(clean1, clean2);
+            const scoreFon = getPhoneticSimilarity(m1_norm, m2_norm);
+            const tokenMetrics = getTokenMetrics(m1_norm, m2_norm);
+
+            // Usamos a métrica Fuzzy para capturar "axys" == "axis". Ela será >= overlap estrito.
+            const scoreTokenBest = Math.max(tokenMetrics.jaccard, tokenMetrics.overlap, tokenMetrics.fuzzy);
+
+            const scoreAnagram = getSortedCharSimilarity(m1_norm, m2_norm);
+
+            const maxDriver = Math.max(scoreOrto, scoreFon, scoreTokenBest, scoreAnagram);
+            const average = (scoreOrto + scoreFon + scoreTokenBest + scoreAnagram) / 4;
+            const finalScore = (average * 0.4) + (maxDriver * 0.6);
+
+            let driverName = 'Geral';
+            if (maxDriver === scoreFon) driverName = 'Fonética (Som)';
+            else if (maxDriver === scoreOrto) driverName = 'Ortografia (Escrita)';
+            else if (maxDriver === scoreAnagram) driverName = 'Conteúdo (Anagrama)';
+            else if (maxDriver === tokenMetrics.fuzzy && tokenMetrics.fuzzy > tokenMetrics.overlap) driverName = 'Aproximação de Termos (Fuzzy)';
+            else if (maxDriver === tokenMetrics.overlap && tokenMetrics.overlap > tokenMetrics.jaccard) driverName = 'Inclusão Total de Termo';
+            else if (maxDriver === scoreTokenBest) driverName = 'Palavras em Comum';
+
+            return {
+                final: finalScore,
+                driver: driverName,
+                vetores: { orto: scoreOrto, fon: scoreFon, token: scoreTokenBest, anagram: scoreAnagram, fuzzy: tokenMetrics.fuzzy }
+            };
+        }
+
+        // =================================================================
+        // 3. LÓGICA MESTRE (Com Dupla Comparação de Numerais - SIMÉTRICA)
+        // =================================================================
+        // Garante que comparar Marca A vs Marca B produza o mesmo resultado que Marca B vs Marca A,
+        // avaliando as quatro combinações (literal/cardinal de cada marca vs a outra normalizada)
+        // e retornando a de maior score.
+        function calcularScoreComplexo(m1, m2) {
+            const m1_base = applyBaseNormalization(m1);
+            const m2_base = applyBaseNormalization(m2);
+
+            // --- Lado M1: Vias Literal e Cardinal de M1 vs M2 base ---
+            const m1_literal_norm = applyBaseNormalization(convertToLiteralWords(m1));
+            const m1_cardinal_norm = applyBaseNormalization(convertToCardinalWords(m1));
+            const res_1_literal = calculateSingleScore(m1_literal_norm, m2_base);
+            res_1_literal.via = 'Literal (dígito por dígito)';
+            const res_1_cardinal = calculateSingleScore(m1_cardinal_norm, m2_base);
+            res_1_cardinal.via = 'Cardinal (valor por extenso)';
+
+            // --- Lado M2: Vias Literal e Cardinal de M2 vs M1 base ---
+            const m2_literal_norm = applyBaseNormalization(convertToLiteralWords(m2));
+            const m2_cardinal_norm = applyBaseNormalization(convertToCardinalWords(m2));
+            const res_2_literal = calculateSingleScore(m2_literal_norm, m1_base);
+            res_2_literal.via = 'Literal (dígito por dígito)';
+            const res_2_cardinal = calculateSingleScore(m2_cardinal_norm, m1_base);
+            res_2_cardinal.via = 'Cardinal (valor por extenso)';
+
+            // --- Decisão Final: maior similaridade entre as 4 (resultado simétrico na troca A↔B) ---
+            const candidatos = [res_1_literal, res_1_cardinal, res_2_literal, res_2_cardinal];
+            let melhor = candidatos[0];
+            for (let i = 1; i < candidatos.length; i++) {
+                if (candidatos[i].final > melhor.final) melhor = candidatos[i];
+            }
+            return melhor;
+        }
+
+        // =================================================================
+        // 4. PREPARAÇÃO DOS DADOS (Incluindo os novos casos)
+        // =================================================================
+
+        // =================================================================
+        // 5. GERENCIAMENTO DE DADOS (JSON + LocalStorage)
+        // =================================================================
+
+        let allCases = [];
+
+        // Toast: mensagem com botão fechar (substitui alert)
+        function showToast(msg, type) {
+            type = type || 'info';
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = 'toast toast-' + (type === 'success' ? 'success' : type === 'error' ? 'error' : 'info');
+            toast.setAttribute('role', 'alert');
+            toast.innerHTML = '<span class="toast-text">' + (typeof escapeHtml !== 'undefined' ? escapeHtml(msg) : msg.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')) + '</span><button type="button" class="toast-close" title="Fechar" aria-label="Fechar">&times;</button>';
+            toast.querySelector('.toast-close').addEventListener('click', function () { toast.remove(); });
+            container.appendChild(toast);
+        }
+
+        // Modal de confirmação (substitui confirm): exibe mensagem e chama onConfirm(true) ao confirmar, onConfirm(false) ao cancelar
+        function showConfirmModal(title, message, onConfirm) {
+            const backdrop = document.createElement('div');
+            backdrop.className = 'modal-backdrop';
+            backdrop.innerHTML = '<div class="modal-box"><h3>' + (title || 'Confirmar') + '</h3><p>' + (message || '') + '</p><div class="modal-actions"><button type="button" class="btn-cancel">Cancelar</button><button type="button" class="btn-confirm">Confirmar</button></div></div>';
+            const box = backdrop.querySelector('.modal-box');
+            backdrop.addEventListener('click', function (e) {
+                if (e.target === backdrop) { backdrop.remove(); if (onConfirm) onConfirm(false); }
+            });
+            box.querySelector('.btn-cancel').addEventListener('click', function () { backdrop.remove(); if (onConfirm) onConfirm(false); });
+            box.querySelector('.btn-confirm').addEventListener('click', function () { backdrop.remove(); if (onConfirm) onConfirm(true); });
+            document.body.appendChild(backdrop);
+        }
+
+        // Carrega dados do JSON e funde com LocalStorage
+        async function loadData() {
+            try {
+                // Tenta carregar do arquivo JSON
+                // Nota: Em ambiente local (file://), o fetch pode ser bloqueado por CORS.
+                // Idealmente deve ser rodado em um servidor local.
+                let jsonCases = [];
+                try {
+                    const response = await fetch('brand_cases.json');
+                    if (response.ok) {
+                        jsonCases = await response.json();
+                    }
+                } catch (e) {
+                    console.warn('Falha ao carregar brand_cases.json');
+                    // Silencioso se falhar
+                }
+
+                // Carrega do LocalStorage (onde salvamos novos casos temporariamente)
+                const storedCases = JSON.parse(localStorage.getItem('brand_cases_local')) || [];
+
+                // Funde listas.
+                // Criamos um mapa para evitar duplicatas exatas de (m1+m2) se necessário, 
+                // mas aqui permitiremos repetição se o usuário adicionar explicitamente.
+                // Prioridade: LocalStorage (mais recente) + JSON (base)
+                allCases = [...jsonCases, ...storedCases];
+
+                if (allCases.length === 0) {
+                    // Nenhum caso, não faz nada
+                }
+                renderTable();
+            } catch (error) {
+                console.error("Erro fatal ao carregar dados:", error);
+            }
+        }
+
+        // Salva novo caso no LocalStorage
+        function saveNewCase(m1, m2) {
+            const newCase = { m1, m2 };
+            // Adiciona na memória
+            allCases.push(newCase);
+
+            // Persiste apenas os novos no LocalStorage
+            const storedCases = JSON.parse(localStorage.getItem('brand_cases_local')) || [];
+            storedCases.push(newCase);
+            localStorage.setItem('brand_cases_local', JSON.stringify(storedCases));
+
+            // Atualiza a tabela completa
+            renderTable();
+        }
+
+        // Gera download do JSON atualizado (todos os casos)
+        // Gera download do JSON atualizado (todos os casos)
+        async function downloadJson() {
+            const fileName = "brand_cases_updated.json";
+            const jsonContent = JSON.stringify(allCases, null, 2);
+
+            try {
+                // Tenta usar a API moderna de File System Access se disponível (Chrome/Edge)
+                if (window.showSaveFilePicker) {
+                    const handle = await window.showSaveFilePicker({
+                        suggestedName: fileName,
+                        types: [{
+                            description: 'JSON File',
+                            accept: { 'application/json': ['.json'] },
+                        }],
+                    });
+                    const writable = await handle.createWritable();
+                    await writable.write(jsonContent);
+                    await writable.close();
+                    showToast('Arquivo exportado com sucesso.', 'success');
+                    return;
+                }
+            } catch (err) {
+                if (err.name !== 'AbortError') {
+                    console.error("Erro ao salvar arquivo:", err);
+                }
+                // Se o usuário cancelar ou der erro, mas não for suporte, cai no fallback abaixo? 
+                // Não, o catch pega. Se for AbortError (cancelou), paramos. 
+                // Se for outro erro ou API não suportada, fazemos fallback.
+                if (err.name === 'AbortError') return;
+            }
+
+            // Fallback para download via anchor (navegador decide local ou pergunta)
+            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(jsonContent);
+            const downloadAnchorNode = document.createElement('a');
+            downloadAnchorNode.setAttribute("href", dataStr);
+            downloadAnchorNode.setAttribute("download", fileName);
+            document.body.appendChild(downloadAnchorNode);
+            downloadAnchorNode.click();
+            downloadAnchorNode.remove();
+            showToast('Arquivo exportado com sucesso.', 'success');
+        }
+
+        // Importa JSON via upload de arquivo
+        function handleFileUpload(input) {
+            const file = input.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function (e) {
+                try {
+                    const content = e.target.result;
+                    const newCases = JSON.parse(content);
+
+                    if (Array.isArray(newCases)) {
+                        // Filtra apenas objetos válidos com m1 e m2
+                        const validCases = newCases.filter(c => c.m1 && c.m2);
+
+                        // Adiciona ao topo ou fim? O usuário disse "todos os SEUS casos calculados".
+                        // Vamos limpar o atual ou adicionar? Geralmente importar = adicionar.
+                        // Mas se for uma carga completa, talvez substituir?
+                        // "Habilite um botão de leitura... e todos os seus casos calculados".
+                        // Vou ADICIONAR aos existentes para não perder o que já foi feito, 
+                        // e re-renderizar.
+
+                        let count = 0;
+                        validCases.forEach(c => {
+                            allCases.push(c);
+                            count++;
+                        });
+
+                        showToast(count + ' casos importados com sucesso!', 'success');
+                        renderTable();
+                    } else {
+                        showToast("O formato do JSON deve ser um array de objetos (Ex: [{m1: 'a', m2: 'b'}])", 'error');
+                    }
+                } catch (error) {
+                    console.error(error);
+                    showToast("Erro ao ler ou processar o arquivo JSON. Verifique a formatação.", 'error');
+                }
+                // Limpa o input para permitir re-importar o mesmo arquivo se alterado
+                input.value = '';
+            };
+            reader.readAsText(file);
+        }
+
+        // Exclui um caso pelo índice
+        function deleteCase(index) {
+            allCases.splice(index, 1);
+            renderTable();
+        }
+
+        // Limpa todo o histórico (memória e localStorage) após confirmação
+        function limparHistorico() {
+            if (allCases.length === 0) return;
+            showConfirmModal('Limpar histórico', 'Deseja realmente limpar todo o histórico de análises? Esta ação não pode ser desfeita.', function (ok) {
+                if (!ok) return;
+                allCases = [];
+                localStorage.removeItem('brand_cases_local');
+                renderTable();
+                showToast('Histórico limpo.', 'success');
+            });
+        }
+
+        // Reaproveita um par do histórico: preenche Marca A e Marca B para edição/novo cálculo
+        function preencherCamposPorIndice(index) {
+            const caso = allCases[index];
+            if (!caso) return;
+            document.getElementById('manualMarca1').value = caso.m1 || '';
+            document.getElementById('manualMarca2').value = caso.m2 || '';
+            document.getElementById('manualMarca1').focus();
+        }
+
+        // =================================================================
+        // 5. RENDERIZAÇÃO
+        // =================================================================
+        function escapeHtml(str) {
+            if (str == null) return '';
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+        function formatPct(val) { return (val * 100).toFixed(1) + '%'; }
+
+        function getBadgeClass(val) {
+            if (val >= 0.7) return 'score-high';
+            if (val >= 0.45) return 'score-med';
+            return 'score-low';
+        }
+
+        function adicionarLinhaTabela(m1, m2, res, highlight = false) {
+            const tbody = document.querySelector('#tabelaResultados tbody');
+            const tr = document.createElement('tr');
+            if (highlight) tr.style.backgroundColor = "#fffde7";
+
+            const scoreClass = getBadgeClass(res.final);
+            const getStyle = (val) => val >= 0.8 ? 'class="metric-tag highlight-tag"' : 'class="metric-tag"';
+
+            tr.innerHTML = `
+                <td class="par-marcas-cell" onclick="preencherCamposPorIndice(${res.index})" title="Clique para reutilizar este par nos campos Marca A e B" style="cursor:pointer;">
+                    <span class="mark-main">${escapeHtml(m1)}</span>
+                    <div style="color:#999; font-size:0.8em; margin:2px 0;">vs</div>
+                    <span class="mark-main">${escapeHtml(m2)}</span>
+                </td>
+                <td>
+                    <span class="score-badge ${scoreClass}">${formatPct(res.final)}</span>
+                </td>
+                <td>
+                    <div class="metric-tags">
+                        <span ${getStyle(res.vetores.orto)}>Ort: <b>${formatPct(res.vetores.orto)}</b></span>
+                        <span ${getStyle(res.vetores.fon)}>Fon: <b>${formatPct(res.vetores.fon)}</b></span>
+                        <span ${getStyle(res.vetores.token)}>Tok: <b>${formatPct(res.vetores.token)}</b></span>
+                        <span ${getStyle(res.vetores.anagram)}>Ana: <b>${formatPct(res.vetores.anagram)}</b></span>
+                    </div>
+                    <div class="driver-info" style="margin-top: 8px;">
+                        Via: <span>${res.via}</span>
+                    </div>
+                    <div class="driver-info">
+                        Impulsionado por: <strong>${res.driver}</strong>
+                    </div>
+                </td>
+                <td style="text-align:center;" onclick="event.stopPropagation()">
+                    <button onclick="deleteCase(${res.index})" style="background:none; border:none; color:#c0392b; cursor:pointer; font-size:1.2em;" title="Excluir">🗑️</button>
+                </td>
+            `;
+            if (highlight) tbody.insertBefore(tr, tbody.firstChild);
+            else tbody.appendChild(tr);
+        }
+
+        function renderTable() {
+            const tbody = document.querySelector('#tabelaResultados tbody');
+            tbody.innerHTML = ''; // Limpa
+
+            // Renderiza na ordem INVERSA (recente no topo)
+            // Copia o array para não reverter o original
+            const reversedCases = [...allCases].reverse();
+
+            reversedCases.forEach((caso, i) => {
+                // Precisamos encontrar o índice original para o delete funcionar corretamente
+                // O índice no array original é: length - 1 - i
+                const originalIndex = allCases.length - 1 - i;
+
+                const res = calcularScoreComplexo(caso.m1, caso.m2);
+                res.index = originalIndex; // Usa o índice do array original
+                adicionarLinhaTabela(caso.m1, caso.m2, res, false);
+            });
+        }
+
+        // Exibe aviso no topo (útil para erros de carregamento)
+        function showErrorWarning(msg) {
+            const container = document.querySelector('.container');
+            const alertDiv = document.createElement('div');
+            alertDiv.style.backgroundColor = '#fff3cd';
+            alertDiv.style.color = '#856404';
+            alertDiv.style.padding = '15px';
+            alertDiv.style.borderRadius = '8px';
+            alertDiv.style.marginBottom = '20px';
+            alertDiv.style.border = '1px solid #ffeeba';
+            alertDiv.innerHTML = `<strong>Atenção:</strong> ${msg}`;
+
+            // Insere logo após o título (segundo filho, depois do h1)
+            const inputGroup = document.querySelector('.input-group');
+            container.insertBefore(alertDiv, inputGroup);
+        }
+
+        function executarTesteManual() {
+            const m1 = document.getElementById('manualMarca1').value;
+            const m2 = document.getElementById('manualMarca2').value;
+            if (!m1 || !m2) { showToast('Preencha as duas marcas', 'info'); return; }
+
+            // Salva e re-renderiza (adiciona ao histórico)
+            saveNewCase(m1, m2);
+
+            // Limpa campos
+            document.getElementById('manualMarca1').value = '';
+            document.getElementById('manualMarca2').value = '';
+        }
+
+        // Execução ao carregar
+        window.onload = function () {
+            loadData();
+        };
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Algoritmo de Colisão de Marcas (SimilarityOFTA.py)</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f4f6f9;
+            color: #333;
+            margin: 0;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background-color: #fff;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+        }
+
+        h1 {
+            color: #2c3e50;
+            text-align: center;
+            margin-bottom: 5px;
+        }
+
+        h1 small {
+            display: block;
+            font-size: 0.5em;
+            color: #7f8c8d;
+            font-weight: normal;
+            margin-top: 5px;
+        }
+
+        /* Área de Teste Manual */
+        .input-group {
+            background: #eef2f7;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+            display: flex;
+            gap: 15px;
+            align-items: flex-end;
+            flex-wrap: wrap;
+            border: 1px solid #dce4ec;
+        }
+
+        .field {
+            flex: 1;
+            min-width: 200px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 700;
+            font-size: 0.85em;
+            color: #555;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ccd0d5;
+            border-radius: 6px;
+            box-sizing: border-box;
+            font-size: 16px;
+            transition: border 0.3s;
+        }
+
+        input[type="text"]:focus {
+            border-color: #3498db;
+            outline: none;
+        }
+
+        button {
+            background-color: #3498db;
+            color: white;
+            padding: 12px 25px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: bold;
+            transition: all 0.2s;
+            height: 45px;
+            box-shadow: 0 2px 5px rgba(52, 152, 219, 0.3);
+        }
+
+        button:hover {
+            background-color: #2980b9;
+            transform: translateY(-1px);
+        }
+
+        /* Tabela de Casos */
+        table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            margin-top: 20px;
+            font-size: 0.90em;
+        }
+
+        th {
+            background-color: #34495e;
+            color: #fff;
+            text-align: left;
+            padding: 15px;
+            font-weight: 600;
+            border-radius: 8px 8px 0 0;
+        }
+
+        td {
+            border-bottom: 1px solid #eee;
+            padding: 12px 15px;
+            vertical-align: middle;
+        }
+
+        tr:last-child td {
+            border-bottom: none;
+        }
+
+        tr:nth-child(even) {
+            background-color: #fcfcfc;
+        }
+
+        tr:hover {
+            background-color: #f1f7fc;
+        }
+
+        /* Badges e Tags */
+        .score-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 65px;
+            height: 30px;
+            border-radius: 15px;
+            font-weight: 800;
+            color: #fff;
+            font-size: 1em;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .score-high {
+            background-color: #27ae60;
+            background-image: linear-gradient(135deg, #2ecc71 0%, #27ae60 100%);
+        }
+
+        .score-med {
+            background-color: #f39c12;
+            background-image: linear-gradient(135deg, #f1c40f 0%, #f39c12 100%);
+        }
+
+        .score-low {
+            background-color: #c0392b;
+            background-image: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+        }
+
+        .metric-tags {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            margin-top: 6px;
+        }
+
+        .metric-tag {
+            background: #e9ecef;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 0.8em;
+            color: #495057;
+            border: 1px solid #dee2e6;
+        }
+
+        .metric-tag b {
+            color: #212529;
+        }
+
+        .highlight-tag {
+            background-color: #d1ecf1;
+            color: #0c5460;
+            border-color: #bee5eb;
+            font-weight: 600;
+        }
+
+        .driver-info {
+            margin-top: 6px;
+            font-size: 0.85em;
+            color: #666;
+            font-style: italic;
+        }
+
+        .driver-info strong {
+            color: #e67e22;
+        }
+
+        .driver-info span {
+            font-weight: bold;
+            color: #3498db;
+        }
+
+        .section-header {
+            margin: 40px 0 15px 0;
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+            color: #2c3e50;
+            font-weight: 700;
+            font-size: 1.1em;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .mark-main {
+            color: #2980b9;
+            font-weight: bold;
+        }
+
+        .par-marcas-cell:hover {
+            background-color: #e8f4fc !important;
+        }
+
+        .backend-note {
+            font-size: 0.85em;
+            color: #7f8c8d;
+            margin-top: 8px;
+        }
+
+        .error-msg {
+            margin-top: 10px;
+            color: #c0392b;
+            font-size: 0.85em;
+        }
+
+        /* Toast (notificação com botão fechar) */
+        #toast-container {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            max-width: 360px;
+        }
+        .toast {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            padding: 14px 16px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            background: #fff;
+            border-left: 4px solid #3498db;
+            animation: toastIn 0.25s ease;
+        }
+        .toast.toast-success { border-left-color: #27ae60; background: #e8f8f5; }
+        .toast.toast-error   { border-left-color: #c0392b; background: #fdeded; }
+        .toast.toast-info    { border-left-color: #3498db; background: #ebf5fb; }
+        .toast-text { flex: 1; font-size: 0.9em; line-height: 1.4; }
+        .toast-close {
+            flex-shrink: 0;
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 2px;
+            color: #7f8c8d;
+            font-size: 1.2em;
+            line-height: 1;
+        }
+        .toast-close:hover { color: #2c3e50; }
+        @keyframes toastIn {
+            from { opacity: 0; transform: translateX(20px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+    </style>
+</head>
+
+<body>
+    <div id="toast-container" aria-live="polite"></div>
+    <div class="container">
+        <h1>
+            Análise de Risco de Marcas
+            <small>Frontend usando exclusivamente <b>SimilarityOFTA.py</b> (Python) como motor de similaridade</small>
+        </h1>
+
+        <div class="input-group">
+            <div class="field">
+                <label>Marca A</label>
+                <input type="text" id="manualMarca1" placeholder="Ex: CAMARÃO COCO BRASIL">
+            </div>
+            <div class="field">
+                <label>Marca B</label>
+                <input type="text" id="manualMarca2" placeholder="Ex: amarElos Psicologia">
+            </div>
+            <button onclick="executarTesteManual()">Calcular</button>
+            <div class="backend-note">
+                Os cálculos são feitos via backend Python chamando <code>SimilarityOFTA.py</code>.
+                Ajuste a URL da API no script conforme seu servidor.
+                <div id="errorArea" class="error-msg"></div>
+            </div>
+        </div>
+
+        <div class="section-header">
+            <span>Histórico de Análises (SimilarityOFTA.py)</span>
+            <div style="margin-left:auto; display:flex; gap:10px;">
+                <input type="file" id="jsonInputOFTA" accept=".json" style="display:none;" onchange="handleFileUploadOFTA(this)">
+                <button onclick="document.getElementById('jsonInputOFTA').click()"
+                    style="font-size:0.7em; padding:5px 10px; height:auto; background:#95a5a6; color:white; border:none; border-radius:4px; cursor:pointer;">
+                    Importar JSON
+                </button>
+                <button onclick="downloadDebugJsonOFTA()"
+                    style="font-size:0.7em; padding:5px 10px; height:auto; background:#8e44ad; color:white; border:none; border-radius:4px; cursor:pointer;">
+                    Salvar JSON de Debug
+                </button>
+                <button onclick="downloadCasesJsonOFTA()"
+                    style="font-size:0.7em; padding:5px 10px; height:auto; background:#27ae60; color:white; border:none; border-radius:4px; cursor:pointer;">
+                    Salvar JSON de Casos
+                </button>
+            </div>
+        </div>
+
+        <table id="tabelaResultados">
+            <thead>
+                <tr>
+                    <th width="30%">Par de Marcas Comparado</th>
+                    <th width="13%">Score Final</th>
+                    <th>Detalhamento (Métricas &amp; Via Vencedora)</th>
+                </tr>
+            </thead>
+            <tbody>
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        // Toast: exibe mensagem com botão fechar (substitui alert)
+        function showToast(msg, type = 'info') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = 'toast toast-' + (type === 'success' ? 'success' : type === 'error' ? 'error' : 'info');
+            toast.setAttribute('role', 'alert');
+            toast.innerHTML = '<span class="toast-text">' + escapeHtml(msg) + '</span><button type="button" class="toast-close" title="Fechar" aria-label="Fechar">&times;</button>';
+            const closeBtn = toast.querySelector('.toast-close');
+            function remove() {
+                toast.style.animation = 'toastIn 0.2s ease reverse';
+                setTimeout(() => toast.remove(), 200);
+            }
+            closeBtn.addEventListener('click', remove);
+            container.appendChild(toast);
+        }
+
+        // URL do backend que expõe SimilarityOFTA.py.
+        // Como o frontend é servido pelo próprio Flask em run.py,
+        // usamos um caminho relativo para sempre atingir a mesma origem/porta.
+        const API_URL = '/similarity-ofta';
+
+        const historico = [];
+
+        function escapeHtml(str) {
+            if (str == null) return '';
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
+        function formatPct(val) {
+            return (val * 100).toFixed(1) + '%';
+        }
+
+        function getBadgeClass(val) {
+            if (val >= 0.7) return 'score-high';
+            if (val >= 0.45) return 'score-med';
+            return 'score-low';
+        }
+
+        function adicionarLinhaTabela(m1, m2, res) {
+            const tbody = document.querySelector('#tabelaResultados tbody');
+            const tr = document.createElement('tr');
+
+            const scoreClass = getBadgeClass(res.final);
+            const getStyle = (val) => val >= 0.8 ? 'class="metric-tag highlight-tag"' : 'class="metric-tag"';
+
+            tr.innerHTML = `
+                <td class="par-marcas-cell">
+                    <span class="mark-main">${escapeHtml(m1)}</span>
+                    <div style="color:#999; font-size:0.8em; margin:2px 0;">vs</div>
+                    <span class="mark-main">${escapeHtml(m2)}</span>
+                </td>
+                <td>
+                    <span class="score-badge ${scoreClass}">${formatPct(res.final)}</span>
+                </td>
+                <td>
+                    <div class="metric-tags">
+                        <span ${getStyle(res.vetores.orto)}>Ort: <b>${formatPct(res.vetores.orto)}</b></span>
+                        <span ${getStyle(res.vetores.fon)}>Fon: <b>${formatPct(res.vetores.fon)}</b></span>
+                        <span ${getStyle(res.vetores.token)}>Tok: <b>${formatPct(res.vetores.token)}</b></span>
+                        <span ${getStyle(res.vetores.anagram)}>Ana: <b>${formatPct(res.vetores.anagram)}</b></span>
+                    </div>
+                    <div class="driver-info" style="margin-top: 8px;">
+                        Via: <span>${res.via || 'SimilarityOFTA.py'}</span>
+                    </div>
+                    <div class="driver-info">
+                        Impulsionado por: <strong>${res.driver}</strong>
+                    </div>
+                </td>
+            `;
+
+            tbody.insertBefore(tr, tbody.firstChild);
+        }
+
+        async function chamarBackendSimilarity(m1, m2) {
+            const errorArea = document.getElementById('errorArea');
+            errorArea.textContent = '';
+
+            try {
+                const resp = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ nome1: m1, nome2: m2 })
+                });
+
+                if (!resp.ok) {
+                    throw new Error(`Erro HTTP ${resp.status}`);
+                }
+
+                // Espera um JSON no formato retornado por calcular_score_complexo em SimilarityOFTA.py
+                // { final: float (0–1), driver: string, via: string, vetores: {orto, fon, token, anagram, fuzzy} }
+                const data = await resp.json();
+                return data;
+            } catch (e) {
+                console.error(e);
+                errorArea.textContent = 'Falha ao chamar o backend Python (SimilarityOFTA.py). Verifique se o servidor está rodando e a URL da API.';
+                throw e;
+            }
+        }
+
+        async function executarTesteManual() {
+            const m1 = document.getElementById('manualMarca1').value.trim();
+            const m2 = document.getElementById('manualMarca2').value.trim();
+
+            if (!m1 || !m2) {
+                showToast('Preencha as duas marcas', 'info');
+                return;
+            }
+
+            try {
+                const res = await chamarBackendSimilarity(m1, m2);
+                historico.push({ m1, m2, res });
+                adicionarLinhaTabela(m1, m2, res);
+
+                document.getElementById('manualMarca1').value = '';
+                document.getElementById('manualMarca2').value = '';
+            } catch (e) {
+                // erro já tratado em chamarBackendSimilarity
+            }
+        }
+
+        // Importa JSON com casos no formato [{ "m1": "...", "m2": "..." }, ...]
+        // e calcula automaticamente cada par usando o backend SimilarityOFTA.py.
+        function handleFileUploadOFTA(input) {
+            const file = input.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = async function (e) {
+                try {
+                    const content = e.target.result;
+                    const newCases = JSON.parse(content);
+
+                    if (Array.isArray(newCases)) {
+                        // Filtra apenas objetos válidos com m1 e m2
+                        const validCases = newCases.filter(c => c.m1 && c.m2);
+
+                        let count = 0;
+                        for (const c of validCases) {
+                            try {
+                                const res = await chamarBackendSimilarity(c.m1, c.m2);
+                                historico.push({ m1: c.m1, m2: c.m2, res });
+                                adicionarLinhaTabela(c.m1, c.m2, res);
+                                count++;
+                            } catch {
+                                // erros individuais já são tratados em chamarBackendSimilarity
+                                break;
+                            }
+                        }
+
+                        if (count > 0) {
+                            showToast(count + ' casos importados e calculados com sucesso!', 'success');
+                        }
+                    } else {
+                        showToast('O formato do JSON deve ser um array de objetos (Ex: [{"m1": "a", "m2": "b"}])', 'error');
+                    }
+                } catch (error) {
+                    console.error(error);
+                    showToast('Erro ao ler ou processar o arquivo JSON. Verifique a formatação.', 'error');
+                }
+                // Limpa o input para permitir re-importar o mesmo arquivo se alterado
+                input.value = '';
+            };
+            reader.readAsText(file);
+        }
+
+        // Salva um JSON de debug com todas as informações dos casos calculados
+        // Formato: [{ m1, m2, res: { final, driver, via, vetores{...} } }, ...]
+        function downloadDebugJsonOFTA() {
+            if (historico.length === 0) {
+                showToast('Não há casos no histórico para exportar.', 'info');
+                return;
+            }
+            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(historico, null, 2));
+            const downloadAnchorNode = document.createElement('a');
+            downloadAnchorNode.setAttribute("href", dataStr);
+            downloadAnchorNode.setAttribute("download", "similarity_ofta_debug_historico.json");
+            document.body.appendChild(downloadAnchorNode);
+            downloadAnchorNode.click();
+            downloadAnchorNode.remove();
+            showToast('Arquivo de debug exportado.', 'success');
+        }
+
+        // Salva um JSON somente com os pares m1/m2 do histórico,
+        // no mesmo formato de brand_cases_updated_casosruins.json:
+        // [{ "m1": "...", "m2": "..." }, ...]
+        function downloadCasesJsonOFTA() {
+            if (historico.length === 0) {
+                showToast('Não há casos no histórico para exportar.', 'info');
+                return;
+            }
+            const cases = historico.map(h => ({ m1: h.m1, m2: h.m2 }));
+            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(cases, null, 2));
+            const downloadAnchorNode = document.createElement('a');
+            downloadAnchorNode.setAttribute("href", dataStr);
+            downloadAnchorNode.setAttribute("download", "brand_cases_similarity_ofta.json");
+            document.body.appendChild(downloadAnchorNode);
+            downloadAnchorNode.click();
+            downloadAnchorNode.remove();
+            showToast('Arquivo de casos exportado.', 'success');
+        }
+    </script>
+</body>
+
+</html>
