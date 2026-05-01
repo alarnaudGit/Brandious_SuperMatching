@@ -37,6 +37,19 @@ from src.model.dataset import (  # noqa: E402
     SplitConfig,
     stratified_split,
 )
+from src.model.arch_bagging import (  # noqa: E402
+    predict_architecture_bagging,
+    predict_architecture_bagging_components,
+    save_architecture_bagging,
+    train_architecture_bagging,
+)
+from src.model.calibration import PlattCalibrator  # noqa: E402
+from src.model.ensemble import (  # noqa: E402
+    EnsembleMember,
+    predict_ensemble,
+    save_ensemble,
+    train_ensemble,
+)
 from src.model.evaluate import (  # noqa: E402
     compute_metrics_at_threshold,
     find_optimal_threshold,
@@ -45,13 +58,20 @@ from src.model.evaluate import (  # noqa: E402
     roc_curve_data,
 )
 from src.model.explain import (  # noqa: E402
+    integrated_gradients_arch_bagging_row,
     integrated_gradients_for_row,
     permutation_importance,
+    permutation_importance_arch_bagging,
 )
 from src.model.mlp import BrandSimilarityMLP, MLPConfig  # noqa: E402
 from src.model.train import TrainConfig, train_model  # noqa: E402
 from src.normalize import calcular_score_complexo, calcular_similaridade_ofta  # noqa: E402
-from src.pipeline.preprocessor import FeaturePreprocessor, PreprocessorConfig  # noqa: E402
+from src.pipeline.preprocessor import (  # noqa: E402
+    BERTIMBAU_BASE_STS,
+    BERTIMBAU_LARGE_STS,
+    FeaturePreprocessor,
+    PreprocessorConfig,
+)
 from src.reports import (  # noqa: E402
     all_errors_separated,
     build_report,
@@ -96,6 +116,10 @@ def _init_session_state() -> None:
         "importance_top": None,
         "score_nn_full": None,
         "score_heuristic_full": None,
+        "ensemble_members": None,
+        "arch_bagging_members": None,
+        "calibrator": None,
+        "arch_config_dict": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -118,13 +142,63 @@ def render_sidebar() -> dict[str, Any]:
             value=True,
             help="Adiciona spec_cosine_emb. Default ON conforme escopo.",
         )
+
+        emb_model_options = {
+            "MiniLM multilingual (rapido, ~280 MB)": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+            "BERTimbau-base STS (PT-BR, ~440 MB)": BERTIMBAU_BASE_STS,
+            "BERTimbau-large STS (PT-BR, ~1.3 GB) [Sprint 1 default]": BERTIMBAU_LARGE_STS,
+        }
+        emb_model_label = st.selectbox(
+            "Modelo de embedding (specs e marcas)",
+            options=list(emb_model_options.keys()),
+            index=2,  # default no BERTimbau-large STS
+            help="BERTimbau-large e mais lento mas costuma render +1 a +2 pp em PR-AUC.",
+        )
+        emb_model = emb_model_options[emb_model_label]
+
+        use_brand_emb = st.checkbox(
+            "Adicionar features brand_emb_* (embedding da marca)",
+            value=True,
+            help="3 features Sprint 1: cosine entre embeddings das marcas (raw e normalized).",
+        )
+
+        generic_df = st.slider(
+            "Limiar DF (%) para token generico (auto-deteccao)",
+            0.5, 5.0, 1.0, 0.1,
+            help="Token presente em >= X% das marcas vira 'generico'. "
+                 "Default 1.0%: ~100 tokens em 30k marcas. "
+                 "Diminua para deteccao mais agressiva.",
+        )
+
         top_k = st.slider("Top-K classes Nice (one-hot)", 5, 30, 15)
         tfidf_word_max = st.number_input("TF-IDF word max_features", 1000, 50_000, 20_000, step=1000)
         tfidf_char_max = st.number_input("TF-IDF char max_features", 1000, 50_000, 10_000, step=1000)
 
-    with st.sidebar.expander("Arquitetura MLP", expanded=True):
-        hidden_str = st.text_input("Hidden layers (vir-separadas)", value="128,64,32")
-        dropout = st.slider("Dropout", 0.0, 0.7, 0.3, 0.05)
+    with st.sidebar.expander("Arquitetura", expanded=True):
+        arch_options = {
+            "MLP (baseline)": "mlp",
+            "Two-Tower + Cross-Attention": "two_tower",
+            "FT-Transformer": "ft_transformer",
+            "Multi-Task MLP (4 heads)": "multitask",
+        }
+        arch_label = st.selectbox(
+            "Variante (Sprint 2 A/B test)",
+            options=list(arch_options.keys()),
+            index=0,
+            help=(
+                "MLP: baseline. Two-Tower: separa nome vs contexto. "
+                "FT-Transformer: cada feature vira um token. "
+                "Multi-Task: backbone unico com 3 heads auxiliares para reforcar generalizacao."
+            ),
+        )
+        arch_value = arch_options[arch_label]
+        hidden_str = st.text_input(
+            "Hidden layers (vir-separadas)",
+            value="256,128,64" if arch_value in ("multitask",) else "128,64,32",
+        )
+        dropout = st.slider(
+            "Dropout", 0.0, 0.7, 0.45 if arch_value == "multitask" else 0.3, 0.05,
+        )
         bn = st.checkbox("BatchNorm", value=True)
         activation = st.selectbox("Ativacao", ["relu", "gelu", "leakyrelu", "tanh"], index=0)
 
@@ -134,6 +208,54 @@ def render_sidebar() -> dict[str, Any]:
         lr = st.select_slider("Learning rate", options=[1e-4, 3e-4, 1e-3, 3e-3, 1e-2], value=1e-3)
         wd = st.select_slider("Weight decay", options=[0.0, 1e-5, 1e-4, 1e-3], value=1e-4)
         es_patience = st.slider("Early stopping patience (PR-AUC val)", 3, 30, 10)
+
+    with st.sidebar.expander("Loss & Taticas Sprint 2", expanded=False):
+        loss_options = {
+            "BCE com pos_weight (default)": "bce",
+            "Focal (gamma=2, alpha=0.25)": "focal",
+            "Label smoothing BCE (eps=0.05)": "label_smoothing",
+            "Focal + Label smoothing (recomendado)": "focal_smoothing",
+        }
+        loss_label = st.selectbox(
+            "Funcao de perda", options=list(loss_options.keys()), index=0,
+        )
+        loss_value = loss_options[loss_label]
+        focal_alpha = st.slider("Focal alpha", 0.05, 0.95, 0.25, 0.05)
+        focal_gamma = st.slider("Focal gamma", 0.5, 5.0, 2.0, 0.5)
+        label_smoothing = st.slider("Label smoothing (eps)", 0.0, 0.2, 0.05, 0.01)
+
+        mixup_pos = st.slider(
+            "Mixup entre positivos (% por batch)", 0.0, 0.5, 0.0, 0.05,
+            help="Substitui parte dos pos do batch por combinacao convexa de outros pos. 0 desliga.",
+        )
+        hard_neg = st.checkbox(
+            "Hard Negative Mining (a partir da 5a epoca)", value=False,
+            help="Em cada epoca >=5, monta batch com TODOS pos + top-k neg de maior score.",
+        )
+        symmetry_aug = st.checkbox(
+            "Symmetry augmentation (duplica dataset)", value=False,
+            help="Aumenta robustez a ordenacao (A,B) vs (B,A).",
+        )
+
+    with st.sidebar.expander("Calibracao & Ensemble", expanded=False):
+        use_arch_bagging = st.checkbox(
+            "Bagging das 4 arquiteturas (score final = media)",
+            value=False,
+            help=(
+                "Treina MLP, Two-Tower, FT-Transformer e Multi-Task com os mesmos dados; "
+                "cada um gera score calibrado e o score final e a media. Incompativel com ensemble por seeds."
+            ),
+        )
+        use_calibration = st.checkbox(
+            "Aplicar Platt scaling no validation", value=False,
+            disabled=bool(use_arch_bagging),
+            help="No bagging por arquitetura, a calibracao Platt e aplicada por modelo automaticamente.",
+        )
+        n_seeds = st.slider(
+            "Ensemble: numero de seeds", 1, 5, 1,
+            help="1 = treino unico (modo padrao). 3 = recomendado para reduzir variancia.",
+            disabled=bool(use_arch_bagging),
+        )
 
     with st.sidebar.expander("Balanceamento", expanded=True):
         under_ratio = st.slider("Undersample neg/pos ratio", 1.0, 10.0, 3.0, 0.5)
@@ -156,7 +278,11 @@ def render_sidebar() -> dict[str, Any]:
             tfidf_char_max_features=int(tfidf_char_max),
             top_k_classes=int(top_k),
             use_embeddings=bool(use_emb),
+            embedding_model=str(emb_model),
+            use_brand_embeddings=bool(use_brand_emb),
+            generic_df_threshold=float(generic_df) / 100.0,
         ),
+        "architecture": str(arch_value),
         "hidden_dims": [int(x.strip()) for x in hidden_str.split(",") if x.strip()],
         "dropout": float(dropout),
         "use_batchnorm": bool(bn),
@@ -166,6 +292,16 @@ def render_sidebar() -> dict[str, Any]:
         "lr": float(lr),
         "weight_decay": float(wd),
         "es_patience": int(es_patience),
+        "loss_name": str(loss_value),
+        "focal_alpha": float(focal_alpha),
+        "focal_gamma": float(focal_gamma),
+        "label_smoothing": float(label_smoothing),
+        "mixup_pos": float(mixup_pos),
+        "hard_neg_mining": bool(hard_neg),
+        "symmetry_aug": bool(symmetry_aug),
+        "use_calibration": bool(use_calibration),
+        "use_arch_bagging": bool(use_arch_bagging),
+        "n_seeds": int(n_seeds),
         "under_ratio": float(under_ratio),
         "over_factor": float(over_factor),
         "use_cw": bool(use_cw),
@@ -468,6 +604,14 @@ para errar menos.
         weight_decay=cfg["weight_decay"],
         early_stopping_patience=cfg["es_patience"],
         seed=cfg["seed"],
+        architecture=cfg.get("architecture", "mlp"),
+        loss_name=cfg.get("loss_name", "bce"),
+        focal_alpha=cfg.get("focal_alpha", 0.25),
+        focal_gamma=cfg.get("focal_gamma", 2.0),
+        label_smoothing=cfg.get("label_smoothing", 0.05),
+        mixup_pos=cfg.get("mixup_pos", 0.0),
+        hard_neg_mining=cfg.get("hard_neg_mining", False),
+        symmetry_aug=cfg.get("symmetry_aug", False),
     )
     mlp_cfg = MLPConfig(
         input_dim=X.shape[1],
@@ -543,35 +687,163 @@ para errar menos.
                 st.dataframe(df_h.tail(10), use_container_width=True)
             status_slot.info(f"Epoca {info['epoch']} concluida (val PR-AUC = {info['val_pr_auc']:.4f}).")
 
-        with st.spinner("Treinando MLP..."):
-            model, result = train_model(
-                X_train,
-                y_train,
-                X_val,
-                y_val,
-                mlp_cfg,
-                train_cfg,
-                bal,
-                on_epoch_end=on_epoch_end,
-                should_stop=lambda: bool(st.session_state.stop_train),
-            )
+        feature_names_local = st.session_state.get("feature_names") or []
+        n_seeds = int(cfg.get("n_seeds", 1))
+        use_arch_bagging = bool(cfg.get("use_arch_bagging", False))
+        use_ensemble = n_seeds > 1 and not use_arch_bagging
+        seeds = (
+            [cfg["seed"] + i * 1000 for i in range(n_seeds)] if use_ensemble else None
+        )
+
+        if use_arch_bagging:
+
+            def on_variant_start(key: str, i: int, total: int) -> None:
+                status_slot.info(
+                    f"Bagging por arquitetura: treinando {key} ({i}/{total})...",
+                )
+
+            with st.spinner("Treinando 4 arquiteturas (score final = media)..."):
+                members_ab = train_architecture_bagging(
+                    X_train,
+                    y_train,
+                    X_val,
+                    y_val,
+                    train_cfg,
+                    bal,
+                    list(feature_names_local),
+                    calibrate=True,
+                    on_variant_start=on_variant_start,
+                    on_epoch_end=on_epoch_end,
+                    should_stop=lambda: bool(st.session_state.stop_train),
+                )
+            if not members_ab:
+                st.error("Bagging por arquitetura nao completou nenhum modelo.")
+                return
+            model = members_ab[0].model
+            mean_pr = float(np.mean([m.best_pr_auc_val for m in members_ab]))
+            result = type(
+                "ArchBagResult",
+                (),
+                {
+                    "best_epoch": int(members_ab[-1].best_epoch),
+                    "best_pr_auc_val": mean_pr,
+                    "history": members_ab[-1].history,
+                    "pos_weight_used": 1.0,
+                    "n_train_after_balancing": 0,
+                },
+            )()
+            st.session_state.arch_bagging_members = members_ab
+            st.session_state.ensemble_members = None
+        elif use_ensemble:
+            with st.spinner(
+                f"Treinando ensemble de {n_seeds} membros (arquitetura: {train_cfg.architecture})..."
+            ):
+                members = train_ensemble(
+                    X_train, y_train, X_val, y_val,
+                    mlp_cfg, train_cfg, bal,
+                    seeds=seeds,
+                    feature_names=feature_names_local,
+                    on_epoch_end=on_epoch_end,
+                    should_stop=lambda: bool(st.session_state.stop_train),
+                    calibrate=cfg.get("use_calibration", False),
+                )
+            if not members:
+                st.error("Ensemble retornou vazio. Verifique os logs.")
+                return
+            model = members[0].model
+            result = type(
+                "EnsResult", (),
+                {
+                    "best_epoch": members[0].best_epoch,
+                    "best_pr_auc_val": float(np.mean([m.best_pr_auc_val for m in members])),
+                    "history": members[0].history,
+                    "pos_weight_used": 1.0,
+                    "n_train_after_balancing": 0,
+                },
+            )()
+            st.session_state.ensemble_members = members
+            st.session_state.arch_bagging_members = None
+        else:
+            with st.spinner(
+                f"Treinando modelo (arquitetura: {train_cfg.architecture})..."
+            ):
+                model, result = train_model(
+                    X_train,
+                    y_train,
+                    X_val,
+                    y_val,
+                    mlp_cfg,
+                    train_cfg,
+                    bal,
+                    on_epoch_end=on_epoch_end,
+                    should_stop=lambda: bool(st.session_state.stop_train),
+                    feature_names=feature_names_local,
+                )
+            st.session_state.ensemble_members = None
+            st.session_state.arch_bagging_members = None
 
         st.session_state.model = model
         st.session_state.train_result = result
         st.session_state.train_cfg = train_cfg
         st.session_state.mlp_cfg = mlp_cfg
 
-        val_scores = predict_scores(model, X_val)
-        thr_opt, thr_policy = find_optimal_threshold(y_val, val_scores, recall_floor=cfg["recall_floor"])
+        arch_bag = st.session_state.get("arch_bagging_members")
+        if arch_bag:
+            val_scores = predict_architecture_bagging(
+                arch_bag, X_val, apply_calibration=True,
+            )
+        elif use_ensemble and st.session_state.ensemble_members:
+            val_scores = predict_ensemble(
+                st.session_state.ensemble_members, X_val,
+                apply_calibration=cfg.get("use_calibration", False),
+            )
+        else:
+            val_scores = predict_scores(model, X_val)
+
+        if arch_bag:
+            st.session_state.calibrator = None
+        elif cfg.get("use_calibration", False) and not use_ensemble:
+            calibrator = PlattCalibrator().fit(val_scores, y_val)
+            st.session_state.calibrator = calibrator
+            val_scores = calibrator.transform(val_scores)
+        else:
+            if not use_ensemble:
+                st.session_state.calibrator = None
+
+        thr_opt, thr_policy = find_optimal_threshold(
+            y_val, val_scores, recall_floor=cfg["recall_floor"],
+        )
         st.session_state.threshold_optimal = float(thr_opt)
         st.session_state.threshold_policy = thr_policy
 
-        test_scores = predict_scores(model, X_test)
+        if arch_bag:
+            test_scores = predict_architecture_bagging(
+                arch_bag, X_test, apply_calibration=True,
+            )
+        elif use_ensemble and st.session_state.ensemble_members:
+            test_scores = predict_ensemble(
+                st.session_state.ensemble_members, X_test,
+                apply_calibration=cfg.get("use_calibration", False),
+            )
+        else:
+            test_scores = predict_scores(model, X_test)
+            if st.session_state.calibrator is not None:
+                test_scores = st.session_state.calibrator.transform(test_scores)
         em = compute_metrics_at_threshold(y_test, test_scores, threshold=thr_opt)
         st.session_state.eval_metrics_test = em
 
+        if use_arch_bagging:
+            ens_msg = " (bagging 4 arquiteturas, score = media)"
+        else:
+            ens_msg = f" (ensemble {n_seeds} seeds)" if use_ensemble else ""
+        cal_msg = (
+            " (calibrado Platt por modelo)"
+            if arch_bag
+            else (" (calibrado Platt)" if cfg.get("use_calibration", False) else "")
+        )
         status_slot.success(
-            f"Treino concluido. Epoca otima: {result.best_epoch}, val PR-AUC = {result.best_pr_auc_val:.4f}. "
+            f"Treino concluido{ens_msg}{cal_msg}. Epoca otima: {result.best_epoch}, "
+            f"val PR-AUC = {result.best_pr_auc_val:.4f}. "
             f"Threshold otimo (val) = {thr_opt:.3f}. Test PR-AUC = {em.pr_auc:.4f}, Recall = {em.recall:.3f}."
         )
 
@@ -628,12 +900,33 @@ negativos; idealmente os positivos (em uma cor) ficam concentrados a direita
 
     model = st.session_state.get("model")
     splits = st.session_state.get("splits")
+    ensemble_members = st.session_state.get("ensemble_members")
+    arch_bagging = st.session_state.get("arch_bagging_members")
+    calibrator = st.session_state.get("calibrator")
     if model is None or splits is None:
         st.info("Treine o modelo na aba 3.")
         return
 
     X_test, y_test = splits["test"]
-    scores_test = predict_scores(model, X_test)
+    if arch_bagging:
+        scores_test = predict_architecture_bagging(
+            arch_bagging, X_test, apply_calibration=True,
+        )
+        st.caption(
+            "Bagging por arquitetura: score final = media dos 4 modelos (Platt por modelo).",
+        )
+    elif ensemble_members:
+        scores_test = predict_ensemble(
+            ensemble_members, X_test, apply_calibration=True,
+        )
+        st.caption(
+            f"Modo ensemble ativo ({len(ensemble_members)} membros, calibracao aplicada)."
+        )
+    else:
+        scores_test = predict_scores(model, X_test)
+        if calibrator is not None and calibrator.fitted:
+            scores_test = calibrator.transform(scores_test)
+            st.caption("Calibracao Platt aplicada nos scores.")
 
     threshold = st.slider(
         "Threshold (slider dinamico)",
@@ -759,11 +1052,16 @@ Para cada feature, o sistema:
     model = st.session_state.get("model")
     splits = st.session_state.get("splits")
     names = st.session_state.get("feature_names")
+    arch_bagging = st.session_state.get("arch_bagging_members")
     if model is None or splits is None:
         st.info("Treine o modelo na aba 3.")
         return
 
     X_val, y_val = splits["val"]
+    if arch_bagging:
+        st.caption(
+            "Modo bagging 4 arquiteturas: a importancia e calculada sobre o score agregado (media).",
+        )
 
     sample_max = min(2000, len(y_val))
     sample = st.slider("Amostra para permutation importance", 200, sample_max, min(800, sample_max))
@@ -774,9 +1072,19 @@ Para cada feature, o sistema:
         rng = np.random.default_rng(42)
         idx = rng.choice(len(y_val), size=sample, replace=False)
         with st.spinner("Calculando importance..."):
-            top = permutation_importance(
-                model, X_val[idx], y_val[idx], names, metric=metric, n_repeats=n_repeats,
-            )
+            if arch_bagging:
+                top = permutation_importance_arch_bagging(
+                    arch_bagging,
+                    X_val[idx],
+                    y_val[idx],
+                    names,
+                    metric=metric,
+                    n_repeats=n_repeats,
+                )
+            else:
+                top = permutation_importance(
+                    model, X_val[idx], y_val[idx], names, metric=metric, n_repeats=n_repeats,
+                )
         st.session_state.importance_top = top
 
     top = st.session_state.get("importance_top")
@@ -824,16 +1132,41 @@ def tab_manual_test() -> None:
             }
         )
         X_pair = preproc.transform(df_pair, scale=True)
-        nn_score = float(predict_scores(model, X_pair)[0])
+        ensemble_members = st.session_state.get("ensemble_members")
+        arch_bagging = st.session_state.get("arch_bagging_members")
+        calibrator = st.session_state.get("calibrator")
+        if arch_bagging:
+            comp = predict_architecture_bagging_components(
+                arch_bagging, X_pair, apply_calibration=True,
+            )[0]
+            nn_score = float(comp.mean())
+            by_arch = {m.key: float(comp[j]) for j, m in enumerate(arch_bagging)}
+        elif ensemble_members:
+            nn_score = float(predict_ensemble(
+                ensemble_members, X_pair, apply_calibration=True,
+            )[0])
+            by_arch = None
+        else:
+            nn_score = float(predict_scores(model, X_pair)[0])
+            if calibrator is not None and calibrator.fitted:
+                nn_score = float(calibrator.transform(np.array([nn_score]))[0])
+            by_arch = None
         ofta = calcular_score_complexo(marca_a, marca_b)
 
         c1, c2, c3 = st.columns(3)
         c1.metric("Score NN (0-1)", f"{nn_score:.4f}")
         c2.metric("Score heuristica OFTA (0-1)", f"{ofta['final']:.4f}", delta=f"driver: {ofta.get('driver','')}")
         c3.metric("Classe prevista", int(nn_score >= threshold), delta=f"thr={threshold:.2f}")
+        if by_arch:
+            st.caption("Scores por arquitetura (calibrados): " + ", ".join(f"{k}={v:.4f}" for k, v in by_arch.items()))
 
         with st.spinner("Calculando contribuicoes (Integrated Gradients)..."):
-            attrib = integrated_gradients_for_row(model, X_pair[0], names)
+            if arch_bagging:
+                attrib = integrated_gradients_arch_bagging_row(
+                    arch_bagging, X_pair[0], names,
+                )
+            else:
+                attrib = integrated_gradients_for_row(model, X_pair[0], names)
         st.subheader("Top 10 features que mais influenciaram este score")
         df_attr = pd.DataFrame(attrib).head(10)
         st.dataframe(df_attr, use_container_width=True)
@@ -848,12 +1181,15 @@ def tab_artifacts() -> None:
     X = st.session_state.get("feature_matrix")
     names = st.session_state.get("feature_names")
     splits = st.session_state.get("splits")
-    model: BrandSimilarityMLP | None = st.session_state.get("model")
+    model = st.session_state.get("model")
     em_test = st.session_state.get("eval_metrics_test")
     threshold_opt = float(st.session_state.get("threshold_optimal", 0.5))
     threshold_policy = st.session_state.get("threshold_policy", {})
     train_result = st.session_state.get("train_result")
     importance_top = st.session_state.get("importance_top")
+    ensemble_members: list[EnsembleMember] | None = st.session_state.get("ensemble_members")
+    arch_bagging_members = st.session_state.get("arch_bagging_members")
+    calibrator: PlattCalibrator | None = st.session_state.get("calibrator")
 
     if not all([df is not None, preproc is not None, X is not None, model is not None, em_test is not None]):
         st.info("Conclua treino e avaliacao antes de exportar artefatos.")
@@ -869,8 +1205,25 @@ def tab_artifacts() -> None:
     )
 
     if st.button("Gerar e salvar todos os artefatos", type="primary"):
+        def _predict_full(_X: np.ndarray) -> np.ndarray:
+            if arch_bagging_members:
+                return predict_architecture_bagging(
+                    arch_bagging_members, _X, apply_calibration=True,
+                )
+            if ensemble_members:
+                return predict_ensemble(
+                    ensemble_members, _X,
+                    apply_calibration=bool(calibrator is not None or any(
+                        m.calibrator.fitted for m in ensemble_members
+                    )),
+                )
+            s = predict_scores(model, _X)
+            if calibrator is not None and calibrator.fitted:
+                s = calibrator.transform(s)
+            return s
+
         with st.spinner("Calculando scores no dataset completo..."):
-            score_nn_full = predict_scores(model, X)
+            score_nn_full = _predict_full(X)
             score_h_full = np.array(
                 [
                     calcular_similaridade_ofta(a, b)
@@ -884,12 +1237,20 @@ def tab_artifacts() -> None:
         preproc.save(out_dir / "preprocessor.pkl")
         save_state_dict(model.state_dict(), out_dir / "model.pt")
 
+        if calibrator is not None and calibrator.fitted:
+            calibrator.save(out_dir / "calibrator.json")
+
+        if ensemble_members:
+            save_ensemble(ensemble_members, out_dir / "ensemble")
+        if arch_bagging_members:
+            save_architecture_bagging(arch_bagging_members, out_dir / "ensemble_arch_bagging")
+
         X_train, y_train = splits["train"]
         X_val, y_val = splits["val"]
         X_test, y_test = splits["test"]
-        scores_train = predict_scores(model, X_train)
-        scores_val = predict_scores(model, X_val)
-        scores_test = predict_scores(model, X_test)
+        scores_train = _predict_full(X_train)
+        scores_val = _predict_full(X_val)
+        scores_test = _predict_full(X_test)
         em_train = compute_metrics_at_threshold(y_train, scores_train, threshold_opt)
         em_val = compute_metrics_at_threshold(y_val, scores_val, threshold_opt)
         em_test_re = compute_metrics_at_threshold(y_test, scores_test, threshold_opt)
@@ -900,8 +1261,13 @@ def tab_artifacts() -> None:
             "train_cfg", TrainConfig(epochs=max(1, len(st.session_state.history)))
         )
 
+        arch_cfg = (
+            model.config if hasattr(model, "config") else (
+                model.cfg if hasattr(model, "cfg") else MLPConfig(input_dim=X.shape[1])
+            )
+        )
         cfg_dict = build_model_config_dict(
-            mlp_config=model.config,
+            mlp_config=arch_cfg,
             preprocessor=preproc,
             train_config=train_cfg,
             balancing=bal,
@@ -916,6 +1282,13 @@ def tab_artifacts() -> None:
             state_dict=model.state_dict(),
             embedding_used=preproc.config.use_embeddings,
         )
+        if arch_bagging_members:
+            cfg_dict["architecture_bagging"] = {
+                "enabled": True,
+                "aggregation": "mean",
+                "members": [m.key for m in arch_bagging_members],
+                "artifact_dir": "ensemble_arch_bagging",
+            }
         save_model_config(cfg_dict, out_dir / "brand_similarity_model_config.json")
 
         save_enriched_dataframe(
@@ -937,9 +1310,19 @@ def tab_artifacts() -> None:
                 rng = np.random.default_rng(42)
                 sample_n = min(600, len(y_val))
                 idx = rng.choice(len(y_val), size=sample_n, replace=False)
-                importance_top = permutation_importance(
-                    model, X_val[idx], y_val[idx], names, metric="pr_auc", n_repeats=2,
-                )
+                if arch_bagging_members:
+                    importance_top = permutation_importance_arch_bagging(
+                        arch_bagging_members,
+                        X_val[idx],
+                        y_val[idx],
+                        names,
+                        metric="pr_auc",
+                        n_repeats=2,
+                    )
+                else:
+                    importance_top = permutation_importance(
+                        model, X_val[idx], y_val[idx], names, metric="pr_auc", n_repeats=2,
+                    )
                 st.session_state.importance_top = importance_top
 
         with st.spinner("Coletando estatisticas detalhadas para o relatorio..."):
@@ -993,7 +1376,7 @@ def tab_artifacts() -> None:
         report_md = build_report(
             feature_names=names,
             balancing=bal,
-            pos_weight_used=float(train_result.pos_weight_used) if train_result else 1.0,
+            pos_weight_used=float(getattr(train_result, "pos_weight_used", 1.0)) if train_result else 1.0,
             split_config=split_cfg,
             metrics_train=em_train,
             metrics_val=em_val,
@@ -1003,7 +1386,7 @@ def tab_artifacts() -> None:
             threshold_policy=threshold_policy,
             dataset_report=df_report,
             importance_top=importance_top,
-            mlp_config=model.config.to_dict(),
+            mlp_config=arch_cfg.to_dict() if hasattr(arch_cfg, "to_dict") else dict(arch_cfg.__dict__),
             train_config=train_cfg_dict,
             history=list(st.session_state.history) if st.session_state.history else None,
             preprocessing_summary=preproc_summary,
@@ -1030,11 +1413,13 @@ def tab_artifacts() -> None:
         out_dir / "brand_similarity_model_config.json",
         out_dir / "model.pt",
         out_dir / "preprocessor.pkl",
+        out_dir / "calibrator.json",
         out_dir / "enriched.parquet",
         out_dir / "brand_similarity_input_view_enriched.xlsx",
         out_dir / "report.md",
         out_dir / "falsos_positivos_grupo_0.csv",
         out_dir / "falsos_negativos_grupo_1.csv",
+        out_dir / "ensemble_arch_bagging" / "index.json",
     ]
     for fp in files:
         if fp.exists():

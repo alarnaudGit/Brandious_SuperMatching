@@ -2,19 +2,20 @@
 from __future__ import annotations
 
 import logging
-from typing import Sequence
+from collections import defaultdict
+from typing import Any, Sequence
 
 import numpy as np
 import torch
+from torch import nn
 
 from .evaluate import predict_scores
-from .mlp import BrandSimilarityMLP
 
 logger = logging.getLogger(__name__)
 
 
 def permutation_importance(
-    model: BrandSimilarityMLP,
+    model: nn.Module,
     X: np.ndarray,
     y: np.ndarray,
     feature_names: Sequence[str],
@@ -58,8 +59,59 @@ def permutation_importance(
     return rows
 
 
+def permutation_importance_arch_bagging(
+    members: Sequence[Any],
+    X: np.ndarray,
+    y: np.ndarray,
+    feature_names: Sequence[str],
+    metric: str = "pr_auc",
+    n_repeats: int = 3,
+    seed: int = 42,
+    device: str = "cpu",
+) -> list[dict[str, float]]:
+    """Permutation importance em relacao ao score agregado (media dos K modelos)."""
+    from sklearn.metrics import average_precision_score, roc_auc_score
+
+    from .arch_bagging import predict_architecture_bagging
+
+    rng = np.random.default_rng(seed)
+    base_scores = predict_architecture_bagging(
+        list(members), X, device=device, apply_calibration=True,
+    )
+    if metric == "pr_auc":
+        base = float(average_precision_score(y, base_scores))
+    elif metric == "roc_auc":
+        base = float(roc_auc_score(y, base_scores))
+    else:
+        raise ValueError(f"metric desconhecida: {metric}")
+
+    n_feats = X.shape[1]
+    importances: list[float] = []
+    for j in range(n_feats):
+        deltas: list[float] = []
+        for _ in range(n_repeats):
+            X_perm = X.copy()
+            rng.shuffle(X_perm[:, j])
+            scores = predict_architecture_bagging(
+                list(members), X_perm, device=device, apply_calibration=True,
+            )
+            if metric == "pr_auc":
+                m = float(average_precision_score(y, scores))
+            else:
+                m = float(roc_auc_score(y, scores))
+            deltas.append(base - m)
+        importances.append(float(np.mean(deltas)))
+
+    rows = [
+        {"feature": str(name), "importance": float(imp)}
+        for name, imp in zip(feature_names, importances)
+    ]
+    rows.sort(key=lambda r: r["importance"], reverse=True)
+    return rows
+
+
 def integrated_gradients_for_row(
-    model: BrandSimilarityMLP,
+    model: nn.Module,
     x: np.ndarray,
     feature_names: Sequence[str],
     baseline: np.ndarray | None = None,
@@ -110,7 +162,38 @@ def integrated_gradients_for_row(
     return rows
 
 
+def integrated_gradients_arch_bagging_row(
+    members: Sequence[Any],
+    x: np.ndarray,
+    feature_names: Sequence[str],
+    baseline: np.ndarray | None = None,
+    n_steps: int = 50,
+    device: str = "cpu",
+) -> list[dict[str, float]]:
+    """Media das contribuicoes IG de cada modelo (mesmo tratamento que o score final)."""
+    if not members:
+        raise ValueError("integrated_gradients_arch_bagging_row: members vazio.")
+    acc: defaultdict[str, float] = defaultdict(float)
+    vals = {str(n): float(x[i]) for i, n in enumerate(feature_names)}
+    for m in members:
+        mod = getattr(m, "model", m)
+        rows = integrated_gradients_for_row(
+            mod, x, feature_names, baseline=baseline, n_steps=n_steps, device=device,
+        )
+        for r in rows:
+            acc[str(r["feature"])] += float(r["contribution"])
+    n = len(members)
+    out = [
+        {"feature": str(fn), "value": vals[str(fn)], "contribution": acc[str(fn)] / n}
+        for fn in feature_names
+    ]
+    out.sort(key=lambda r: abs(r["contribution"]), reverse=True)
+    return out
+
+
 __all__ = [
     "permutation_importance",
+    "permutation_importance_arch_bagging",
     "integrated_gradients_for_row",
+    "integrated_gradients_arch_bagging_row",
 ]

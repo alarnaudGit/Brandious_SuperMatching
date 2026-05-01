@@ -54,9 +54,20 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(
 logger = logging.getLogger("smoke_test")
 
 
-def main(sample_size: int = 1500, epochs: int = 4, use_embeddings: bool = False) -> None:
+def main(
+    sample_size: int = 1500,
+    epochs: int = 4,
+    use_embeddings: bool = False,
+    architecture: str = "mlp",
+    loss_name: str = "bce",
+    n_seeds: int = 1,
+    use_calibration: bool = False,
+) -> None:
     t0 = time.time()
-    logger.info("=== SMOKE TEST INICIADO (sample=%d, epochs=%d, emb=%s) ===", sample_size, epochs, use_embeddings)
+    logger.info(
+        "=== SMOKE TEST INICIADO (sample=%d, epochs=%d, emb=%s, arch=%s, loss=%s, seeds=%d, cal=%s) ===",
+        sample_size, epochs, use_embeddings, architecture, loss_name, n_seeds, use_calibration,
+    )
 
     df_full, report = load_dataset("dataframe_final_colidencias.xlsx")
 
@@ -76,6 +87,9 @@ def main(sample_size: int = 1500, epochs: int = 4, use_embeddings: bool = False)
         top_k_classes=10,
         use_embeddings=use_embeddings,
         embedding_cache_path="artifacts/embeddings_cache_smoke.parquet",
+        use_brand_embeddings=use_embeddings,  # se emb ligado, brand_emb tambem
+        brand_embedding_cache_path="artifacts/embeddings_brand_cache_smoke.parquet",
+        generic_df_threshold=0.01,
     )
     preproc = FeaturePreprocessor(pre_cfg)
     preproc.fit(df)
@@ -94,16 +108,55 @@ def main(sample_size: int = 1500, epochs: int = 4, use_embeddings: bool = False)
     X_te, y_te = X[idx_te], y[idx_te]
 
     bal = BalancingConfig(undersample_neg_ratio=2.5, oversample_pos_factor=2.0, seed=42)
-    train_cfg = TrainConfig(epochs=epochs, batch_size=64, lr=1e-3, early_stopping_patience=20, seed=42)
-    mlp_cfg = MLPConfig(input_dim=X.shape[1], hidden_dims=[64, 32], dropout=0.2, use_batchnorm=True)
+    train_cfg = TrainConfig(
+        epochs=epochs, batch_size=64, lr=1e-3, early_stopping_patience=20, seed=42,
+        architecture=architecture, loss_name=loss_name,
+    )
+    mlp_cfg = MLPConfig(
+        input_dim=X.shape[1],
+        hidden_dims=[256, 128, 64] if architecture == "multitask" else [64, 32],
+        dropout=0.45 if architecture == "multitask" else 0.2,
+        use_batchnorm=True,
+    )
 
-    model, result = train_model(X_tr, y_tr, X_va, y_va, mlp_cfg, train_cfg, bal)
+    feature_names = list(preproc.feature_names_ordered)
+
+    if n_seeds > 1:
+        from src.model.ensemble import train_ensemble, predict_ensemble
+        seeds = [42 + i * 1000 for i in range(n_seeds)]
+        members = train_ensemble(
+            X_tr, y_tr, X_va, y_va,
+            mlp_cfg, train_cfg, bal,
+            seeds=seeds, feature_names=feature_names,
+            calibrate=use_calibration,
+        )
+        model = members[0].model
+        result = type("EnsR", (), {
+            "best_epoch": members[0].best_epoch,
+            "best_pr_auc_val": float(np.mean([m.best_pr_auc_val for m in members])),
+            "history": members[0].history,
+            "pos_weight_used": 1.0,
+            "n_train_after_balancing": 0,
+        })()
+        val_scores = predict_ensemble(members, X_va, apply_calibration=use_calibration)
+        test_scores = predict_ensemble(members, X_te, apply_calibration=use_calibration)
+    else:
+        model, result = train_model(
+            X_tr, y_tr, X_va, y_va, mlp_cfg, train_cfg, bal,
+            feature_names=feature_names,
+        )
+        val_scores = predict_scores(model, X_va)
+        test_scores = predict_scores(model, X_te)
+        if use_calibration:
+            from src.model.calibration import PlattCalibrator
+            cal = PlattCalibrator().fit(val_scores, y_va)
+            val_scores = cal.transform(val_scores)
+            test_scores = cal.transform(test_scores)
+            cal.save(Path("artifacts") / "calibrator_smoke.json")
     logger.info("Treino: best_epoch=%d, best_val_PRAUC=%.4f", result.best_epoch, result.best_pr_auc_val)
 
-    val_scores = predict_scores(model, X_va)
     thr_opt, thr_pol = find_optimal_threshold(y_va, val_scores, recall_floor=0.85)
 
-    test_scores = predict_scores(model, X_te)
     em_test = compute_metrics_at_threshold(y_te, test_scores, threshold=thr_opt)
     em_train = compute_metrics_at_threshold(y_tr, predict_scores(model, X_tr), threshold=thr_opt)
     em_val = compute_metrics_at_threshold(y_va, val_scores, threshold=thr_opt)
@@ -117,8 +170,13 @@ def main(sample_size: int = 1500, epochs: int = 4, use_embeddings: bool = False)
     preproc.save(out / "preprocessor_smoke.pkl")
     save_state_dict(model.state_dict(), out / "model_smoke.pt")
 
+    arch_cfg = (
+        model.config if hasattr(model, "config") else (
+            model.cfg if hasattr(model, "cfg") else mlp_cfg
+        )
+    )
     cfg_json = build_model_config_dict(
-        mlp_config=mlp_cfg,
+        mlp_config=arch_cfg,
         preprocessor=preproc,
         train_config=train_cfg,
         balancing=bal,
@@ -217,7 +275,7 @@ def main(sample_size: int = 1500, epochs: int = 4, use_embeddings: bool = False)
         threshold_policy=thr_pol,
         dataset_report=report,
         importance_top=importance_top,
-        mlp_config=mlp_cfg.to_dict(),
+        mlp_config=arch_cfg.to_dict() if hasattr(arch_cfg, "to_dict") else dict(arch_cfg.__dict__),
         train_config=train_cfg_dict,
         history=[ep for ep in result.history],
         preprocessing_summary=preproc_summary,
@@ -264,5 +322,21 @@ if __name__ == "__main__":
     parser.add_argument("--sample", type=int, default=1500)
     parser.add_argument("--epochs", type=int, default=4)
     parser.add_argument("--emb", action="store_true", help="Usar embeddings semanticos")
+    parser.add_argument(
+        "--arch", type=str, default="mlp",
+        choices=["mlp", "two_tower", "ft_transformer", "multitask"],
+        help="Arquitetura a treinar (Sprint 2)",
+    )
+    parser.add_argument(
+        "--loss", type=str, default="bce",
+        choices=["bce", "focal", "label_smoothing", "focal_smoothing"],
+        help="Funcao de perda",
+    )
+    parser.add_argument("--seeds", type=int, default=1, help="Tamanho do ensemble")
+    parser.add_argument("--calibrate", action="store_true", help="Aplicar Platt scaling")
     args = parser.parse_args()
-    main(sample_size=args.sample, epochs=args.epochs, use_embeddings=args.emb)
+    main(
+        sample_size=args.sample, epochs=args.epochs, use_embeddings=args.emb,
+        architecture=args.arch, loss_name=args.loss,
+        n_seeds=args.seeds, use_calibration=args.calibrate,
+    )

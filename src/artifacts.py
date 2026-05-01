@@ -53,7 +53,7 @@ def _to_jsonable(obj: Any) -> Any:
 
 def build_model_config_dict(
     *,
-    mlp_config: MLPConfig,
+    mlp_config: Any,
     preprocessor: FeaturePreprocessor,
     train_config: TrainConfig,
     balancing: BalancingConfig,
@@ -68,13 +68,16 @@ def build_model_config_dict(
     state_dict: dict[str, torch.Tensor],
     embedding_used: bool,
 ) -> dict[str, Any]:
+    arch_dict = (
+        mlp_config.to_dict() if hasattr(mlp_config, "to_dict") else dict(mlp_config)
+    )
     cfg = {
         "version": __version__,
         "timestamp": _utc_now_iso(),
         "dataset_hash": dataset_report.dataset_hash,
         "label_column_source": "Rótulo (1=manter, 0=outro)",
         "label_column_canon": LABEL_COLUMN_CANON,
-        "architecture": mlp_config.to_dict(),
+        "architecture": arch_dict,
         "feature_names_ordered": list(preprocessor.feature_names_ordered),
         "preprocessing": {
             "config": preprocessor.config.to_dict(),

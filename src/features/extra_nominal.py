@@ -107,15 +107,15 @@ def containment_features(
     a_norm = _norm_concat(a)
     b_norm = _norm_concat(b)
 
-    contain_a_in_b = float(a_norm and a_norm in b_norm)
-    contain_b_in_a = float(b_norm and b_norm in a_norm)
+    contain_a_in_b = float(bool(a_norm) and a_norm in b_norm)
+    contain_b_in_a = float(bool(b_norm) and b_norm in a_norm)
 
     inf_a = det.informative_tokens(a)
     inf_b = det.informative_tokens(b)
     a_strip = "".join(inf_a)
     b_strip = "".join(inf_b)
-    contain_after_strip_a = float(a_strip and a_strip in b_strip)
-    contain_after_strip_b = float(b_strip and b_strip in a_strip)
+    contain_after_strip_a = float(bool(a_strip) and bool(b_strip) and a_strip in b_strip)
+    contain_after_strip_b = float(bool(b_strip) and bool(a_strip) and b_strip in a_strip)
 
     radical_share = _common_prefix_len(a_norm, b_norm)
     radical_share_norm = radical_share / max(1, min(len(a_norm), len(b_norm)))

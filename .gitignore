@@ -19,3 +19,6 @@ dist/
 *.xlsx
 !dataframe_final_colidencias.xlsx
 
+# Cache de embeddings de marca (gerado localmente; > limite GitHub)
+artifacts/embeddings_brand_cache.parquet
+

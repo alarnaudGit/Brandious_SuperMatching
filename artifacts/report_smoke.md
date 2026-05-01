@@ -1,39 +1,37 @@
 # Relatorio Completo - Modelo de Similaridade Aprendida de Marcas
 
-_Gerado em 2026-04-30T15:06:32+00:00 (UTC)._
+_Gerado em 2026-05-01T00:17:19+00:00 (UTC)._
 
 ## Sumario executivo
 
-**Veredito de prontidao:** `NAO RECOMENDADO para producao`
+**Veredito de prontidao:** `ACEITAVEL com monitoramento`
 
 | Metrica | Treino | Validacao | Teste |
 | --- | ---:| ---:| ---:|
-| ROC-AUC | 0.8500 | 0.7389 | **0.7279** |
-| PR-AUC  | 0.6251 | 0.4849 | **0.4882** |
-| F1      | 0.4848 | 0.4286 | **0.3966** |
-| Recall  | 0.9278 | 0.8500 | **0.7667** |
-| Precision | 0.3281 | 0.2865 | **0.2674** |
+| ROC-AUC | 0.8365 | 0.8138 | **0.8328** |
+| PR-AUC  | 0.5730 | 0.5171 | **0.5326** |
+| F1      | 0.3333 | 0.4859 | **0.5000** |
+| Recall  | 1.0000 | 0.8958 | **0.9167** |
+| Precision | 0.2000 | 0.3333 | **0.3438** |
 
-**Threshold de operacao:** `0.3700` (politica: `max_f1_with_recall>=0.85`, recall_floor=0.85)
+**Threshold de operacao:** `0.1500` (politica: `max_f1_with_recall>=0.85`, recall_floor=0.85)
 
 **Pontos fortes:**
-- PR-AUC 0.488 (bom para base desbalanceada)
+- PR-AUC 0.533 (bom para base desbalanceada)
+- Recall 0.917 atende o piso operacional de 85%
+- F1 0.500 (bom equilibrio)
 
 **Atencao:**
-- Recall 0.767 abaixo do piso 0.85 (perde colidentes)
-- F1 0.397 (equilibrio modesto)
-
-**Bloqueadores:**
-- ROC-AUC 0.728 abaixo de 0.80 (separabilidade fraca)
+- ROC-AUC 0.833 (aceitavel, mas pode melhorar)
 
 **Sinais de overfit (treino - teste):**
 
 | Metrica | delta train-test |
 | --- | ---:|
-| ROC-AUC train-test | +0.1221 |
-| PR-AUC train-test | +0.1369 |
-| Recall train-test | +0.1611 |
-| F1 train-test | +0.0882 |
+| ROC-AUC train-test | +0.0037 |
+| PR-AUC train-test | +0.0404 |
+| Recall train-test | +0.0833 |
+| F1 train-test | -0.1667 |
 
 ## 1. Dataset
 
@@ -85,16 +83,16 @@ _Gerado em 2026-04-30T15:06:32+00:00 (UTC)._
 - TF-IDF char: ngram=(3, 5), min_df=3, max_features=2000
 - Embeddings ativos: **False** (modelo: `paraphrase-multilingual-MiniLM-L12-v2`)
 - Cache de embeddings: `artifacts/embeddings_cache_smoke.parquet`
-- Top-10 classes Nice usadas em one-hot: [35, 41, 42, 43, 44, 36, 25, 9, 30, 37]
-- Total de features na ordem canonica: **106**
+- Top-10 classes Nice usadas em one-hot: [35, 41, 42, 43, 44, 36, 9, 25, 37, 30]
+- Total de features na ordem canonica: **147**
 
 ### Graficas (graf_*) (14)
 
 `graf_levenshtein`, `graf_jaro`, `graf_jaro_winkler`, `graf_damerau`, `graf_jaccard_bigram`, `graf_jaccard_trigram`, `graf_overlap_trigram`, `graf_lcs_norm`, `graf_prefix_norm`, `graf_suffix_norm`, `graf_len_ratio`, `graf_len_diff_abs`, `graf_contains`, `graf_anagram`
 
-### Foneticas (fon_*) (7)
+### Foneticas (fon_*) (8)
 
-`fon_global_sim`, `fon_key_eq`, `fon_key_lev_sim`, `fon_after_dedup_eq`, `fon_token_mean`, `fon_token_max`, `fon_token_eq_share`
+`fon_global_sim`, `fon_key_eq`, `fon_key_lev_sim`, `fon_after_dedup_eq`, `fon_token_mean`, `fon_token_max`, `fon_token_eq_share`, `fon_concat_metaphone_eq`
 
 ### Tokens marca (n_tokens_* / tok_*) (9)
 
@@ -112,78 +110,82 @@ _Gerado em 2026-04-30T15:06:32+00:00 (UTC)._
 
 `spec_lex_jaccard`, `spec_lex_overlap`, `spec_lex_n_common`, `spec_lex_n_excl_a`, `spec_lex_n_excl_b`, `spec_lex_n_total_a`, `spec_lex_n_total_b`, `spec_lex_size_ratio`, `spec_lex_size_diff_abs`, `spec_lex_idf_avg_common`
 
-### Especificacao atividade (spec_kind_* / spec_*activity*) (6)
+### Especificacao atividade (spec_kind_* / spec_*activity*) (9)
 
-`spec_same_activity_kind`, `spec_any_misto`, `spec_kind_a_produto`, `spec_kind_a_servico`, `spec_kind_b_produto`, `spec_kind_b_servico`
+`spec_same_activity_kind`, `spec_any_misto`, `spec_kind_a_produto`, `spec_kind_a_servico`, `spec_kind_b_produto`, `spec_kind_b_servico`, `spec_item_max_cosine_tfidf`, `spec_item_top3_mean_cosine`, `spec_item_align_score`
 
 ### Especificacao cosine (spec_cosine_*) (3)
 
 `spec_cosine_tfidf_word`, `spec_cosine_tfidf_char`, `spec_cosine_emb`
 
-### Classe Nice (cls_*) (26)
+### Classe Nice (cls_*) (28)
 
-`cls_same`, `cls_diff_abs`, `cls_a_known`, `cls_b_known`, `cls_a_top_35`, `cls_a_top_41`, `cls_a_top_42`, `cls_a_top_43`, `cls_a_top_44`, `cls_a_top_36`, `cls_a_top_25`, `cls_a_top_9`, `cls_a_top_30`, `cls_a_top_37`, `cls_a_top_other`, `cls_b_top_35`, `cls_b_top_41`, `cls_b_top_42`, `cls_b_top_43`, `cls_b_top_44`, `cls_b_top_36`, `cls_b_top_25`, `cls_b_top_9`, `cls_b_top_30`, `cls_b_top_37`, `cls_b_top_other`
+`cls_same`, `cls_diff_abs`, `cls_a_known`, `cls_b_known`, `cls_a_top_35`, `cls_a_top_41`, `cls_a_top_42`, `cls_a_top_43`, `cls_a_top_44`, `cls_a_top_36`, `cls_a_top_9`, `cls_a_top_25`, `cls_a_top_37`, `cls_a_top_30`, `cls_a_top_other`, `cls_b_top_35`, `cls_b_top_41`, `cls_b_top_42`, `cls_b_top_43`, `cls_b_top_44`, `cls_b_top_36`, `cls_b_top_9`, `cls_b_top_25`, `cls_b_top_37`, `cls_b_top_30`, `cls_b_top_other`, `cls_pair_prior_pos`, `cls_pair_chi2_strength`
 
 ### Interacoes (inter_*) (12)
 
 `inter_nome_x_spec_word`, `inter_nome_x_spec_emb`, `inter_nome_x_spec_max`, `inter_nome_x_same_cls`, `inter_spec_x_same_cls`, `inter_nome_alto_e_spec_alta`, `inter_nome_alto_e_spec_baixa`, `inter_nome_baixo_e_spec_alta`, `inter_classe_diff_mas_emb_alto`, `inter_classe_igual_e_spec_proxima`, `inter_proxy_nome`, `inter_proxy_spec`
 
+### Outras (35)
+
+`name_generic_share_a`, `name_generic_share_b`, `name_generic_share_max`, `name_unique_token_a`, `name_unique_token_b`, `shared_unique_count`, `shared_unique_jaccard`, `shared_token_idf_max`, `shared_token_idf_mean`, `shared_only_generics`, `contain_a_in_b`, `contain_b_in_a`, `contain_after_strip_a_in_b`, `contain_after_strip_b_in_a`, `contain_radical_share`, `contain_radical_share_norm`, `radical_a_len`, `radical_b_len`, `radical_lev_sim`, `radical_phonetic_eq`, `lev_pure_norm`, `lev_pure_jaro_winkler`, `lev_pure_size_diff_abs`, `against_distinct_market`, `against_only_generic_overlap`, `against_size_disparity`, `against_unique_strong_a`, `against_unique_strong_b`, `brand_emb_cosine`, `brand_emb_cosine_normalized`, `brand_emb_norm_max`, `brand_a_token_in_spec_b`, `brand_b_token_in_spec_a`, `brand_longest_common_substring_norm`, `brand_simhash_hamming_norm`
+
 ## 3. Estatisticas das features (apos StandardScaler)
 
-- Linhas usadas para estatistica: 1500
-- Features com variancia ZERO: **6** (possiveis candidatas a remocao)
+- Linhas usadas para estatistica: 1200
+- Features com variancia ZERO: **9** (possiveis candidatas a remocao)
 
-Features sem variancia detectadas: `ofta_driver_geral`, `ofta_driver_palavras`, `cls_b_known`, `inter_nome_x_spec_emb`, `inter_classe_diff_mas_emb_alto`, `spec_cosine_emb`
+Features sem variancia detectadas: `ofta_driver_geral`, `ofta_driver_palavras`, `cls_b_known`, `inter_nome_x_spec_emb`, `inter_classe_diff_mas_emb_alto`, `spec_cosine_emb`, `brand_emb_cosine`, `brand_emb_cosine_normalized`, `brand_emb_norm_max`
 
 ### 3.1 Top features por desvio padrao (apos scaler - util p/ debug)
 
 | Feature | media | desvio | min | max |
 | --- | --- | --- | --- | --- |
-| cls_a_known | 0.0000 | 1.0000 | -11.6346 | 0.0860 |
-| num_fon_worst | 0.0000 | 1.0000 | -0.2138 | 8.4192 |
-| num_has_digits | -0.0000 | 1.0000 | -0.2374 | 4.2131 |
-| cls_b_top_other | 0.0000 | 1.0000 | -0.5527 | 1.8093 |
-| n_tokens_common | -0.0000 | 1.0000 | -0.7586 | 5.9346 |
-| cls_b_top_30 | 0.0000 | 1.0000 | -0.1818 | 5.5000 |
-| cls_b_top_41 | -0.0000 | 1.0000 | -0.3762 | 2.6579 |
-| inter_nome_alto_e_spec_alta | 0.0000 | 1.0000 | -0.1379 | 7.2506 |
-| n_tokens_excl_a | 0.0000 | 1.0000 | -1.5943 | 5.4498 |
-| num_fon_spread | -0.0000 | 1.0000 | -0.1725 | 15.4387 |
-| graf_suffix_norm | 0.0000 | 1.0000 | -0.3563 | 4.7171 |
-| graf_contains | -0.0000 | 1.0000 | -0.2895 | 3.4541 |
-| fon_key_eq | -0.0000 | 1.0000 | -0.1453 | 6.8838 |
-| num_fon_best | 0.0000 | 1.0000 | -0.2167 | 8.0286 |
-| spec_same_activity_kind | -0.0000 | 1.0000 | -0.4461 | 2.2414 |
-| cls_a_top_30 | -0.0000 | 1.0000 | -0.1634 | 6.1206 |
-| tok_overlap | 0.0000 | 1.0000 | -0.7747 | 2.7257 |
-| spec_kind_b_produto | 0.0000 | 1.0000 | -0.4643 | 2.1539 |
-| spec_cosine_tfidf_word | 0.0000 | 1.0000 | -0.4550 | 5.8513 |
-| cls_same | -0.0000 | 1.0000 | -0.5589 | 1.7893 |
+| cls_a_top_9 | -0.0000 | 1.0000 | -0.1234 | 8.1035 |
+| cls_b_top_44 | -0.0000 | 1.0000 | -0.2192 | 4.5627 |
+| cls_a_top_37 | -0.0000 | 1.0000 | -0.1881 | 5.3168 |
+| contain_after_strip_a_in_b | 0.0000 | 1.0000 | -0.2233 | 4.4780 |
+| num_has_digits | -0.0000 | 1.0000 | -0.2412 | 4.1451 |
+| inter_nome_alto_e_spec_alta | -0.0000 | 1.0000 | -0.1335 | 7.4929 |
+| radical_phonetic_eq | 0.0000 | 1.0000 | -0.5966 | 1.6762 |
+| graf_contains | 0.0000 | 1.0000 | -0.2708 | 3.6924 |
+| cls_a_top_43 | 0.0000 | 1.0000 | -0.2526 | 3.9581 |
+| ofta_driver_inclusão | 0.0000 | 1.0000 | -0.2354 | 4.2482 |
+| cls_a_top_30 | -0.0000 | 1.0000 | -0.1708 | 5.8561 |
+| spec_kind_a_servico | 0.0000 | 1.0000 | -0.6560 | 1.5245 |
+| spec_kind_b_servico | 0.0000 | 1.0000 | -0.7419 | 1.3479 |
+| cls_b_top_25 | 0.0000 | 1.0000 | -0.2019 | 4.9530 |
+| name_generic_share_b | -0.0000 | 1.0000 | -0.3837 | 5.6638 |
+| num_orto_spread | -0.0000 | 1.0000 | -0.1776 | 13.7386 |
+| cls_a_top_44 | -0.0000 | 1.0000 | -0.2192 | 4.5627 |
+| cls_a_top_42 | 0.0000 | 1.0000 | -0.2334 | 4.2843 |
+| cls_a_top_35 | -0.0000 | 1.0000 | -0.7325 | 1.3653 |
+| cls_a_top_41 | -0.0000 | 1.0000 | -0.3765 | 2.6559 |
 
 ### 3.2 Top features por |correlacao de Pearson com a label|
 
 | Feature | Pearson |
 | --- | --- |
-| spec_lex_idf_avg_common | 0.3051 |
-| spec_cosine_tfidf_char | 0.3013 |
-| spec_lex_overlap | 0.3006 |
-| inter_proxy_spec | 0.2969 |
-| spec_cosine_tfidf_word | 0.2399 |
-| spec_lex_n_common | 0.2183 |
-| inter_classe_igual_e_spec_proxima | 0.2170 |
-| inter_spec_x_same_cls | 0.2170 |
-| spec_lex_jaccard | 0.2168 |
-| inter_nome_x_spec_max | 0.2151 |
-| tok_fuzzy | 0.1920 |
-| ofta_fuzzy | 0.1920 |
-| ofta_token | 0.1920 |
-| graf_jaro | 0.1768 |
-| graf_overlap_trigram | 0.1767 |
-| inter_nome_x_spec_word | 0.1738 |
-| graf_jaro_winkler | 0.1644 |
-| cls_same | 0.1628 |
-| fon_key_lev_sim | 0.1534 |
-| graf_jaccard_bigram | 0.1480 |
+| cls_pair_prior_pos | 0.3996 |
+| spec_item_max_cosine_tfidf | 0.3613 |
+| spec_item_top3_mean_cosine | 0.3483 |
+| spec_lex_idf_avg_common | 0.3272 |
+| spec_item_align_score | 0.3115 |
+| spec_lex_overlap | 0.3112 |
+| spec_cosine_tfidf_char | 0.3102 |
+| inter_proxy_spec | 0.3082 |
+| spec_lex_n_common | 0.2592 |
+| spec_cosine_tfidf_word | 0.2476 |
+| cls_pair_chi2_strength | 0.2420 |
+| inter_classe_igual_e_spec_proxima | 0.2273 |
+| inter_spec_x_same_cls | 0.2273 |
+| spec_lex_jaccard | 0.2217 |
+| inter_nome_x_spec_max | 0.2209 |
+| ofta_token | 0.1982 |
+| ofta_fuzzy | 0.1982 |
+| tok_fuzzy | 0.1982 |
+| against_distinct_market | -0.1947 |
+| cls_same | 0.1848 |
 
 ## 4. Estrategia de balanceamento
 
@@ -197,17 +199,17 @@ Features sem variancia detectadas: `ofta_driver_geral`, `ofta_driver_palavras`, 
 
 ### 5.1 Arquitetura
 
-- input_dim: **106**
-- hidden_dims: **[64, 32]**
-- ativacao: **relu**
-- dropout: **0.2**
+- input_dim: **147**
+- hidden_dims: **None**
+- ativacao: **None**
+- dropout: **0.45**
 - batchnorm: **True**
 - output: Linear(., 1) -> Sigmoid
-- **# parametros aprendiveis: 9,153**
+- **# parametros aprendiveis: 148**
 
 ### 5.2 Hiperparametros de treino
 
-- epochs: **4**
+- epochs: **3**
 - batch_size: **64**
 - lr: **0.001**
 - weight_decay: **0.0001**
@@ -218,9 +220,9 @@ Features sem variancia detectadas: `ofta_driver_geral`, `ofta_driver_palavras`, 
 - grad_clip: **1.0**
 - device: **auto**
 - seed: **42**
-- best_epoch: **4**
-- best_pr_auc_val: **0.48494418055812394**
-- n_train_after_balancing: **810**
+- best_epoch: **3**
+- best_pr_auc_val: **0.5171230765342824**
+- n_train_after_balancing: **648**
 
 - Otimizador: **AdamW**, Loss: **BCEWithLogitsLoss(pos_weight)**, Scheduler: **ReduceLROnPlateau** (max em val PR-AUC)
 
@@ -228,72 +230,71 @@ Features sem variancia detectadas: `ofta_driver_geral`, `ofta_driver_palavras`, 
 
 | epoch | train_loss | lr | train_pr_auc | val_pr_auc | val_roc_auc | val_recall@0.5 | val_f1@0.5 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | 0.7496 | 0.0010 | 0.7413 | 0.3784 | 0.6744 | 0.5500 | 0.3708 |
-| 2 | 0.6532 | 0.0010 | 0.7893 | 0.4107 | 0.7090 | 0.6333 | 0.4176 |
-| 3 | 0.6235 | 0.0010 | 0.8220 | 0.4452 | 0.7268 | 0.6333 | 0.4551 |
-| 4 | 0.5826 | 0.0010 | 0.8524 | 0.4849 | 0.7389 | 0.6167 | 0.4568 |
+| 1 | 0.4378 | 0.0010 | 0.6770 | 0.4207 | 0.7436 | 0.5208 | 0.4464 |
+| 2 | 0.3509 | 0.0010 | 0.7651 | 0.4800 | 0.7831 | 0.2917 | 0.3636 |
+| 3 | 0.3061 | 0.0010 | 0.8198 | 0.5171 | 0.8138 | 0.2708 | 0.3662 |
 
 
 ## 7. Metricas em detalhe
 
-Threshold otimo: **0.3700** (politica: `max_f1_with_recall>=0.85`, recall_floor=0.85)
+Threshold otimo: **0.1500** (politica: `max_f1_with_recall>=0.85`, recall_floor=0.85)
 
 ### Treino
-- ROC-AUC: **0.8500**
-- PR-AUC:  **0.6251**
-- F1:        0.4848 (threshold=0.370)
-- Precision: 0.3281
-- Recall:    0.9278
-- Confusao: TN=378, FP=342, FN=13, TP=167
-- n_pos=180, n_neg=720
+- ROC-AUC: **0.8365**
+- PR-AUC:  **0.5730**
+- F1:        0.3333 (threshold=0.150)
+- Precision: 0.2000
+- Recall:    1.0000
+- Confusao: TN=0, FP=576, FN=0, TP=144
+- n_pos=144, n_neg=576
 
 ### Validacao
-- ROC-AUC: **0.7389**
-- PR-AUC:  **0.4849**
-- F1:        0.4286 (threshold=0.370)
-- Precision: 0.2865
-- Recall:    0.8500
-- Confusao: TN=113, FP=127, FN=9, TP=51
-- n_pos=60, n_neg=240
+- ROC-AUC: **0.8138**
+- PR-AUC:  **0.5171**
+- F1:        0.4859 (threshold=0.150)
+- Precision: 0.3333
+- Recall:    0.8958
+- Confusao: TN=106, FP=86, FN=5, TP=43
+- n_pos=48, n_neg=192
 
 ### Teste
-- ROC-AUC: **0.7279**
-- PR-AUC:  **0.4882**
-- F1:        0.3966 (threshold=0.370)
-- Precision: 0.2674
-- Recall:    0.7667
-- Confusao: TN=114, FP=126, FN=14, TP=46
-- n_pos=60, n_neg=240
+- ROC-AUC: **0.8328**
+- PR-AUC:  **0.5326**
+- F1:        0.5000 (threshold=0.150)
+- Precision: 0.3438
+- Recall:    0.9167
+- Confusao: TN=108, FP=84, FN=4, TP=44
+- n_pos=48, n_neg=192
 
 ## 8. Distribuicao de scores no teste
 
 | Classe | n | mean | std | p10 | p25 | p50 | p75 | p90 |
 | --- | ---:| ---:| ---:| ---:| ---:| ---:| ---:| ---:|
-| pos | 60 | 0.5530 | 0.1958 | 0.2935 | 0.3909 | 0.5527 | 0.7235 | 0.7958 |
-| neg | 240 | 0.3904 | 0.1582 | 0.1968 | 0.2773 | 0.3820 | 0.4775 | 0.6127 |
+| pos | 48 | 0.3474 | 0.1538 | 0.1693 | 0.2468 | 0.3125 | 0.4504 | 0.5469 |
+| neg | 192 | 0.1669 | 0.1224 | 0.0492 | 0.0769 | 0.1343 | 0.2215 | 0.3326 |
 
-_Diferenca de media (pos - neg): **+0.1625**. Quanto maior, melhor a separabilidade._
+_Diferenca de media (pos - neg): **+0.1805**. Quanto maior, melhor a separabilidade._
 
 ### 8.1 Decis de score (10 = scores mais altos)
 
 | Decil | score_min | score_max | n | positivos | % positivos |
 | --- | --- | --- | --- | --- | --- |
-| 0 | 0.6930 | 0.9041 | 30 | 19 | 0.6333 |
-| 1 | 0.5787 | 0.6864 | 30 | 9 | 0.3000 |
-| 2 | 0.4914 | 0.5771 | 30 | 7 | 0.2333 |
-| 3 | 0.4455 | 0.4907 | 30 | 4 | 0.1333 |
-| 4 | 0.4025 | 0.4431 | 30 | 5 | 0.1667 |
-| 5 | 0.3554 | 0.4012 | 30 | 3 | 0.1000 |
-| 6 | 0.3190 | 0.3550 | 30 | 4 | 0.1333 |
-| 7 | 0.2723 | 0.3175 | 30 | 4 | 0.1333 |
-| 8 | 0.2124 | 0.2717 | 30 | 5 | 0.1667 |
-| 9 | 0.0150 | 0.2109 | 30 | 0 | 0.0000 |
+| 0 | 0.4009 | 0.6898 | 24 | 17 | 0.7083 |
+| 1 | 0.3066 | 0.3978 | 24 | 8 | 0.3333 |
+| 2 | 0.2530 | 0.3057 | 24 | 10 | 0.4167 |
+| 3 | 0.2062 | 0.2523 | 24 | 4 | 0.1667 |
+| 4 | 0.1624 | 0.2048 | 24 | 5 | 0.2083 |
+| 5 | 0.1293 | 0.1622 | 24 | 0 | 0.0000 |
+| 6 | 0.1022 | 0.1288 | 24 | 0 | 0.0000 |
+| 7 | 0.0775 | 0.1015 | 24 | 4 | 0.1667 |
+| 8 | 0.0557 | 0.0749 | 24 | 0 | 0.0000 |
+| 9 | 0.0082 | 0.0555 | 24 | 0 | 0.0000 |
 
 ## 9. Analise de erros (no teste)
 
-- Total de pares no teste: **300** (threshold=0.3700)
-- **Grupo 0** (rotulo real = 0, NAO colidente): 240 pares no total. **126 foram classificados como colidentes (taxa de erro 52.50%)**.
-- **Grupo 1** (rotulo real = 1, colidentes): 60 pares no total. **14 escaparam da classificacao (taxa de erro 23.33%)**.
+- Total de pares no teste: **240** (threshold=0.1500)
+- **Grupo 0** (rotulo real = 0, NAO colidente): 192 pares no total. **84 foram classificados como colidentes (taxa de erro 43.75%)**.
+- **Grupo 1** (rotulo real = 1, colidentes): 48 pares no total. **4 escaparam da classificacao (taxa de erro 8.33%)**.
 - Lista completa Grupo 0 errados (CSV): `artifacts\falsos_positivos_grupo_0_smoke.csv`
 - Lista completa Grupo 1 errados (CSV): `artifacts\falsos_negativos_grupo_1_smoke.csv`
 
@@ -301,185 +302,127 @@ _Diferenca de media (pos - neg): **+0.1625**. Quanto maior, melhor a separabilid
 
 | Marca A | Marca B | cls A | cls B | score |
 | --- | --- | --- | --- | --- |
-| Master Multi | Mastery7 | 35 | 35 | 0.9041 |
-| "KARNE KEIJO" | KARUI | -1 | 29 | 0.8232 |
-| FRUIT AÇAÍ | Fruit Mania | 35 | 35 | 0.7584 |
-| AUTO PEÇAS MATOS | DLC AUTO PEÇAS | 35 | 35 | 0.7516 |
-| Scarlatto | SCARLAT | 35 | 40 | 0.7406 |
-| MARZINHO | MARZINI | 35 | 35 | 0.7201 |
-| Y.Consultoria | ZIP CONSULTORIA | 35 | 35 | 0.7125 |
-| Auto Posto G&D | AUTO POSTO KS | 35 | 37 | 0.7102 |
-| I/O TECNOLOGIA INDUSTRIAL | LIFTUS TECNOLOGIA | 35 | 9 | 0.7012 |
-| P&P CONTABILIDADE E CONSULTORIA EMPRESARIAL | CAMPOS BRITO CONTABILIDADE | 35 | 35 | 0.6966 |
+| Master Multi | Mastery7 | 35 | 35 | 0.6898 |
+| D&F MODA FITNESS | Life Move Moda Fitness | 35 | 25 | 0.6037 |
+| VIDRAÇARIA BRASÍLIA | VIDRAÇARIA MK | 37 | 37 | 0.5858 |
+| VALE ZELAR | VALE JJR | 37 | 37 | 0.5643 |
+| ESPETINHO DA KARLA DESDE 1996 | ESPETINHO DO BEBÊ | 43 | 43 | 0.5622 |
+| RI ARQUITETURA | ACAIÁ ARQUITETURA | 42 | 42 | 0.5547 |
+| MALU | MALULU KIDS | 16 | 25 | 0.4692 |
+| MALU | MA5 | 16 | 37 | 0.3978 |
+| Y.Consultoria | ZV CONSULTORIA | 35 | 35 | 0.3873 |
+| CASA CONCRETA | CONCREJOTA | 41 | 40 | 0.3856 |
 
 ### 9.2 Top 10 Falsos Negativos (Grupo 1 - escapes mais graves)
 
 | Marca A | Marca B | cls A | cls B | score |
 | --- | --- | --- | --- | --- |
-| SABOR CASEIRO SELF SERVICE | CASEIROKA O VERDADEIRO SABOR CASEIRO | 43 | 30 | 0.2126 |
-| SHOPPING PIZZA BURGER | CAVEZZO BURGER & PIZZA | 43 | 35 | 0.2265 |
-| RANCHO DO ACARAJÉ | RANCHO 185 | 43 | 30 | 0.2352 |
-| BONITO'S BAR | Bonantos | 43 | 30 | 0.2658 |
-| PSICO STORE | Psicoplace | 35 | 44 | 0.2685 |
-| NEO AGROAMBIENTAL | NEOON | 42 | 44 | 0.2816 |
-| É HIT | HITZ | 38 | 41 | 0.2948 |
-| DIAS SOLAR ENERGIA RENOVÁVEL | Solardyne | 42 | 37 | 0.2964 |
-| AGROPEREIRA | AGRO FRONTEIRA | 35 | 37 | 0.3123 |
-| BONNA PIZZA | Bon Nut | 43 | 30 | 0.3190 |
+| AVESTA | A.V.I. | 35 | 36 | 0.0776 |
+| SEVERINO APP | SEU SEVERINO | 42 | 35 | 0.0879 |
+| CONTABILIDADE MASTER | contabilidade.com | 35 | 9 | 0.0909 |
+| CAFER PANIFICADORA | Cafezo | 35 | 30 | 0.0931 |
 
-### 9.3 LISTA COMPLETA - Grupo 0 errados (rotulo=0, classificados como colidentes) - 126 pares
+### 9.3 LISTA COMPLETA - Grupo 0 errados (rotulo=0, classificados como colidentes) - 84 pares
 
 _Ordenados por score decrescente (alarmes de maior "confianca errada" primeiro). Cada linha eh um par que o modelo achou que era colidencia mas NAO era segundo o rotulo INPI._
 
 | Marca A | Marca B | cls A | cls B | score |
 | --- | --- | --- | --- | --- |
-| Master Multi | Mastery7 | 35 | 35 | 0.9041 |
-| "KARNE KEIJO" | KARUI | -1 | 29 | 0.8232 |
-| FRUIT AÇAÍ | Fruit Mania | 35 | 35 | 0.7584 |
-| AUTO PEÇAS MATOS | DLC AUTO PEÇAS | 35 | 35 | 0.7516 |
-| Scarlatto | SCARLAT | 35 | 40 | 0.7406 |
-| MARZINHO | MARZINI | 35 | 35 | 0.7201 |
-| Y.Consultoria | ZIP CONSULTORIA | 35 | 35 | 0.7125 |
-| Auto Posto G&D | AUTO POSTO KS | 35 | 37 | 0.7102 |
-| I/O TECNOLOGIA INDUSTRIAL | LIFTUS TECNOLOGIA | 35 | 9 | 0.7012 |
-| P&P CONTABILIDADE E CONSULTORIA EMPRESARIAL | CAMPOS BRITO CONTABILIDADE | 35 | 35 | 0.6966 |
-| ELÉVI+ | ELEVEN | 37 | 35 | 0.6930 |
-| D&F MODA FITNESS | RMF MODA FITNESS | 35 | 35 | 0.6864 |
-| Jucelino Móveis Planejados | LOOV Móveis Planejados | 35 | 35 | 0.6809 |
-| ELEVA POR RENATA PAULA SANTIAGO | Elevy | 35 | 30 | 0.6772 |
-| DISQUE & TOQUE | TOQUE | 41 | 41 | 0.6756 |
-| CLÍNICA ANDRÉIA NOGUEIRA | Maria Nogueira | 44 | 44 | 0.6718 |
-| PP TREINAMENTOS | Entretreinamento | 41 | 41 | 0.6683 |
-| Distribuidora Classic | ABC DISTRIBUIDORA | 35 | 35 | 0.6507 |
-| VALE ZELAR | VALE JJR | 37 | 37 | 0.6319 |
-| SOLAR BANHO E PISCINA | Solaris | 37 | 35 | 0.6306 |
-| E A ESTUDIO ARTE | ESTÚDIO NT | 38 | 38 | 0.6305 |
-| METÁLIX ESTRUTURAS METÁLICAS | Meta | 37 | 42 | 0.6286 |
-| SORVETES DO VALE | RITZ SORVETES | 35 | 30 | 0.6211 |
-| FUCAPE FUNDAÇÃO CAPIXABA DE PESQUISAS | FUCAPI | 35 | 41 | 0.6208 |
-| Imaginário Brasileiro | IMAGINY | 35 | 41 | 0.6118 |
-| SIRIOS ENERGIA SOLAR | ZIRIX | 37 | 9 | 0.6081 |
-| MÉTODO 3T | MÉTODO ADR | 41 | 41 | 0.6060 |
-| SPACE CONDO | Space Cow | 41 | 28 | 0.5993 |
-| CHECKUP | CHECKUP DE MARCAS | 41 | 38 | 0.5926 |
-| DEEP COLLECTION | M.V COLLECTION | 25 | 35 | 0.5878 |
-| ACAÍ DO TIO REI | AÇAÍ BM | 30 | 29 | 0.5792 |
-| VELOZ | VELOX | 35 | 35 | 0.5787 |
-| DEU POSITIVO? A PEQUENINA MODA INFANTIL | POSITIV.A | 35 | 3 | 0.5771 |
-| COLISÃO DISTRIBUIDORA EMBALAGENS EM GERAL | ARILU DISTRIBUIDORA | 35 | 39 | 0.5655 |
-| IVA INSTITUTO DE ESTUDOS E PESQUISAS DO VALE DO ACARAÚ | INSTITUTO HONORATO | 41 | 41 | 0.5611 |
-| F.A.Z. Financeiro de A a Z | FASAW | 35 | 9 | 0.5565 |
-| BR BRAVO ROMEU | BR BRAVOTEC | 35 | 1 | 0.5546 |
-| IN CONNECTION | COMPANY CONNECTION | 41 | 16 | 0.5503 |
-| CASA CONCRETA | CONCREJOTA | 35 | 40 | 0.5499 |
-| açaí Vitaly Pura energia | Vitae+ | 35 | 9 | 0.5404 |
-| Dom Brasil | DTIBRASIL | 35 | 35 | 0.5396 |
-| RESTAURANTE MENINA GERAIS | L&J RESTAURANTE | 43 | 43 | 0.5359 |
-| SAFE CARE RESIDENCIAL E HOTELARIA PARA IDOSOS | Safe care. | 44 | 42 | 0.5345 |
-| CASTELO MAGAZINE | Castel Block | 35 | 28 | 0.5338 |
-| LIFE UP EXPERIENCE | Banah Experience | 41 | 41 | 0.5287 |
-| Master Multi | MASTER | 1 | 40 | 0.5225 |
-| PRAIOW | PRAIA | 43 | 3 | 0.5199 |
-| WM INVESTIMENTOS | ÁRTICO INVESTIMENTOS | 36 | 36 | 0.5182 |
-| ATENDE BIKE | Atenda.bot | 35 | 9 | 0.5147 |
-| S HORSE | KIDS HORSE | 35 | 35 | 0.5075 |
-| THE CAROLINE CASUAL WEAR | CAROL | 35 | 31 | 0.5070 |
-| VAREJÃO DAS MOTOS | Varejão da Horta | 35 | 31 | 0.5002 |
-| EMPÓRIO VSN+ VENTURA SPORTS NUTRITION | Empório Vilarin | 35 | 25 | 0.4953 |
-| M PRIME | primeline | 9 | 9 | 0.4914 |
-| REI DAS CLÍNICAS | CLICK CLÍNICAS | 44 | 45 | 0.4914 |
-| PELLE SANA CLÍNICA ESPECIALIZADA EM TRATAMENTO DE FERIDAS | SAN' MIELLE | 44 | 35 | 0.4907 |
-| SER SAÚDE | SAÚDE+PE | 35 | 45 | 0.4879 |
-| Polaris Energia Solar | POLAR | 42 | 7 | 0.4842 |
-| CENTRAL MECÂNICA | CENTRAL DO QUEIJO | 37 | 35 | 0.4838 |
-| FORRÓ DO MR. BOB | MR.BOX | 41 | 40 | 0.4782 |
-| SECRET & CO | Secret Labs | 35 | 5 | 0.4773 |
-| ESTÂNCIA DOS CAMPOS GALILÉIA - MG | Estância Uniformes | 35 | 25 | 0.4759 |
-| LINAUS CLINIC | LINA | 44 | 35 | 0.4736 |
-| Marketing Erótico | 3.3 Marketing | 41 | 35 | 0.4735 |
-| LORENAS ODONTOLOGIA | LORPAX | 44 | 35 | 0.4727 |
-| CASTELLA | Castelos | 6 | 35 | 0.4706 |
-| RÉNOVÉ | RENOVA D3 | 3 | 5 | 0.4668 |
-| ACADEMIA TOTAL FITNESS | Academia +FFRI | 41 | 41 | 0.4667 |
-| AGUARDENTE DE CANA PRATINHA | PRAINHA | 35 | 41 | 0.4656 |
-| SUPERMERCASA | SUPER CAST | 35 | 28 | 0.4637 |
-| Instituto Apollo | INSTITUTO AFETO | 41 | 44 | 0.4594 |
-| DISTRIBUIDORA POPEYE JR. | GENESYS DISTRIBUIDORA | 39 | 35 | 0.4576 |
-| CHAMA EMPREENDEDORA | EMPREENDEDORAS EM POTENCIAL | 41 | 41 | 0.4570 |
-| CLICK BABY | ClickOne | 41 | 42 | 0.4564 |
-| RESTAURANTE GUARANI SELF SERVICE UBATUBA - SP | Restaurante MARANT | 40 | 43 | 0.4561 |
-| CENTRO EDUCACIONAL MÚLTIPLA ESCOLHA | P4 EDUCACIONAL | 41 | 41 | 0.4547 |
-| EMPÓRIO CAPAS VCA | Empório ZL | 35 | 9 | 0.4529 |
-| DONA FLORINDA | FLORIVA | 35 | 35 | 0.4513 |
-| P4 INVEST | P4 | 42 | 17 | 0.4471 |
-| CASA ELIANA | CASAELLA | 44 | 35 | 0.4459 |
-| AÇAÍ CURITIBA | AÇAÍ BM | 30 | 29 | 0.4455 |
-| VIA BRASIL | VIVA BRASIL SP | 35 | 9 | 0.4431 |
-| VERDICE | VerdiOne | 16 | 35 | 0.4391 |
-| INTENSEE CASUAL | INTENSE SECRET | 35 | 9 | 0.4384 |
-| REALLOC | RentalLoc | 35 | 12 | 0.4375 |
-| LUMANA | LUMUU | 35 | 35 | 0.4368 |
-| SOLUÇÕES FUNDAÇÃO | DAVAR SOLUÇÕES | 37 | 36 | 0.4353 |
-| VirtuaMed O hub da saúde coworking médico | Virtude Mineira | 44 | 30 | 0.4343 |
-| P&P CONTABILIDADE E CONSULTORIA EMPRESARIAL | FC Fonseca Contabilidade | 35 | 45 | 0.4313 |
-| SERTANEJA MÁQUINAS | MESA SERTANEJA | 35 | 38 | 0.4311 |
-| JC ELETRICIDADE ENERGIA SOLAR SOLAR FOTOVOLTAÍCA | MAXT ELETRICIDADE | 35 | 35 | 0.4302 |
-| Virtua Office Coworking Ideas | VIRTUOSO | 35 | 43 | 0.4273 |
-| MERCA CONTABILIDADE & CONSULTORIA | MERCON | 35 | 35 | 0.4269 |
-| Nutris no Online | NUTRI G | 35 | 5 | 0.4268 |
-| VIA ARTE CONSTRUTORA DE OBRAS | VIA FORTE | 37 | 35 | 0.4263 |
-| GABRIELE | GABRIEL FROEDE | 0 | 41 | 0.4228 |
-| UNIVERSO TEC | Universo Circular | 41 | 35 | 0.4218 |
-| META ENGENHARIA SERVIÇOS | METV | 35 | 41 | 0.4194 |
-| Clínica NV | CliniCalm | 44 | 44 | 0.4188 |
-| SERTANEJA MÁQUINAS | VENDA SERTANEJA | 35 | 35 | 0.4154 |
-| GRUPO S | Grupo Igna | 35 | 40 | 0.4152 |
-| ESTÂNCIA DOS CAMPOS GALILÉIA - MG | ESTÂNCIA NOBRE | 35 | 43 | 0.4127 |
-| DIEGO LANCHES | DIEGO BOY | 35 | 45 | 0.4123 |
-| "CHEGA JÁ" | CHEFÃO | 39 | 25 | 0.4043 |
-| INTELIGÊNCIA ADS | Maná Inteligência | 35 | 42 | 0.4035 |
-| . A EXCLUSIVA | EXCLUSIVE STUDIO | 14 | 40 | 0.4027 |
-| Virtua Vet Coworking Veterinário | Virtude Mineira | 44 | 29 | 0.4012 |
-| BRASILGÁS | BRASIL BET | 0 | 9 | 0.3972 |
-| MOB BRASIL MOBILIDADE URBANA | BRASIL BET | 9 | 38 | 0.3968 |
-| DOUTOR GNV | Doutor Ciborg | 41 | 42 | 0.3950 |
-| Vila Gourmet | VilaBox | 41 | 43 | 0.3937 |
-| EMPÓRIO COCADAS OLIMPIO | EMPÓRIO DO RIO | 35 | 35 | 0.3927 |
-| PERSONALE PLANTAS | PERSONE | 42 | 5 | 0.3897 |
-| PARAÍSO DAS PALMEIRAS VIVEIRO ESPECIALIZADO | P PALMEIRAS | 35 | 38 | 0.3896 |
-| TOURO | TOGURO | 40 | 3 | 0.3893 |
-| ESPÍRITO SAMBA | ESPIGUITO | 41 | 39 | 0.3866 |
-| MALU | MALLX | 16 | 9 | 0.3863 |
-| FAMÍLIA MORELLI | MORE | 35 | 35 | 0.3840 |
-| STUDIO R BY RENATA SANTIAGO | STUDIO ANEXO | 44 | 42 | 0.3838 |
-| VALE ENTREGAS | Valeris | 39 | 9 | 0.3832 |
-| açaí Lembrança | Nuvem Branca | 35 | 35 | 0.3808 |
-| X-SERVICE | LAG SERVICE | 35 | 37 | 0.3806 |
-| PERFAL | PERPODECK | 6 | 19 | 0.3798 |
-| TRU LOGÍSTICA | TROAH | 39 | 25 | 0.3749 |
-| Virtua Vet Coworking Veterinário | VIRTUA CONDOMÍNIOS | 35 | 36 | 0.3743 |
-| ONE LINE PARTS | FINELINE | 35 | 9 | 0.3712 |
+| Master Multi | Mastery7 | 35 | 35 | 0.6898 |
+| D&F MODA FITNESS | Life Move Moda Fitness | 35 | 25 | 0.6037 |
+| VIDRAÇARIA BRASÍLIA | VIDRAÇARIA MK | 37 | 37 | 0.5858 |
+| VALE ZELAR | VALE JJR | 37 | 37 | 0.5643 |
+| ESPETINHO DA KARLA DESDE 1996 | ESPETINHO DO BEBÊ | 43 | 43 | 0.5622 |
+| RI ARQUITETURA | ACAIÁ ARQUITETURA | 42 | 42 | 0.5547 |
+| MALU | MALULU KIDS | 16 | 25 | 0.4692 |
+| MALU | MA5 | 16 | 37 | 0.3978 |
+| Y.Consultoria | ZV CONSULTORIA | 35 | 35 | 0.3873 |
+| CASA CONCRETA | CONCREJOTA | 41 | 40 | 0.3856 |
+| MALU | MALAYA | 16 | 30 | 0.3848 |
+| PP TREINAMENTOS | Entretreinamento | 41 | 41 | 0.3789 |
+| RESTAURANTE GUARANI SELF SERVICE UBATUBA - SP | Baloi Restaurante | 40 | 43 | 0.3614 |
+| BARBEARIA SETE DE PAUS | BARBEARIA 288 | 44 | 44 | 0.3582 |
+| Vamo Street Mall | VAMORA | 36 | 10 | 0.3433 |
+| FAZENDA HOMEM DE PEDRA | FAZENDA CAMARGO | 35 | 40 | 0.3428 |
+| DISTRIBUIDORA BAESSA ÁGUA GÁS E CARVÃO | DISTRIBUIDORA NACIONAL 31 | 35 | 21 | 0.3417 |
+| NACIONAL | Nacional Cards | 0 | 35 | 0.3405 |
+| E A ESTUDIO ARTE | ESTÚDIO NT | 38 | 41 | 0.3336 |
+| RESTAURANTE MENINA GERAIS | Restaurante Biu Rico | 43 | 43 | 0.3335 |
+| BAZAR BOTÂNICO | BOTANICCA | 35 | 44 | 0.3244 |
+| MENTORIA EM GRANDES OPERAÇÕES | Mentoria KETA | 41 | 41 | 0.3176 |
+| DROGARIA SANDES | DROGARIAS X PRIME | 35 | 35 | 0.3158 |
+| VIA BRASIL | LOJAS VIA BRASIL | 35 | 28 | 0.3054 |
+| REI DAS CLÍNICAS | CLINICA LINUS | 44 | 44 | 0.2940 |
+| ES CONSTRUÇÃO | GWL CONSTRUÇÃO | 41 | 37 | 0.2910 |
+| ELETRO SOLAR | rda eletro | 35 | 35 | 0.2897 |
+| ALLTECH | Allevo Tech | 45 | 41 | 0.2873 |
+| ESPIRITO SANTO FASHION | 89.1 Espírito Santo FM | 35 | 41 | 0.2824 |
+| Rénové Biocosmetic Spray Hidratante Corporal (Body Moisturizing) | RenovaMap | 3 | 42 | 0.2806 |
+| NACIONAL | BETNACIONAL | 0 | 42 | 0.2788 |
+| Auto Posto G&D | AUTO POSTO KS | 35 | 37 | 0.2758 |
+| UNIVERSIDADE DAS ARTES | UNIFLEX UNIVERSIDADE USAFLEX | 41 | 41 | 0.2685 |
+| PERSONALE PLANTAS | PERSONE | 42 | 5 | 0.2656 |
+| FARMÁCIA MAR & VIDA | MAIS VIDA | 35 | 35 | 0.2597 |
+| GRAN MAREIRO HOTEL | Gran Marrion | 43 | 30 | 0.2580 |
+| ELÉVI+ | ELEV-C | 35 | 35 | 0.2530 |
+| ESCRITA E LEITURA PARA EVOLUÇÃO E VALORIZAÇÃO NA APRENDIZAGEM ELEVA | elevato | 35 | 30 | 0.2523 |
+| TERRAL MARESIAS | TERRADUU | -1 | 25 | 0.2424 |
+| DONA DESIGN | Donalu | 35 | 21 | 0.2404 |
+| NORDESTE EMPREENDEDOR | EMPREENDEDOR BRABO | 41 | 41 | 0.2397 |
+| NEW ELLEGANCE | Monivelle Élégance | 44 | 35 | 0.2362 |
+| SOMA FLUX | SOMAR | 35 | 35 | 0.2342 |
+| PINEE | Pineal | 21 | 35 | 0.2313 |
+| C CONTROLLER | CNCCONTROL | 0 | 37 | 0.2312 |
+| ZZ CAPITÃO MUZZARELA | CAPITÃO CHICO | 43 | 43 | 0.2302 |
+| EU ENGLISH UNIVERSE ONLINE | English Deploy | 41 | 41 | 0.2242 |
+| Jucelino Móveis Planejados | LOOV Móveis Planejados | 35 | 35 | 0.2238 |
+| STUDIO OFICINA 3D | STUDIO A | 35 | 11 | 0.2207 |
+| ALLTEC SISTEMAS DE CONTROLE DESDE 1995 | Alltech | 35 | 5 | 0.2198 |
+| MOVE ENERGIA | ENERGIL | 35 | 5 | 0.2193 |
+| AÇAÍ CURITIBA | AÇAÍ BM | 30 | 29 | 0.2159 |
+| EMPÓRIO POUSO ALEGRE | Empório CTZ | 35 | 35 | 0.2153 |
+| DOM PASTEL | PASTEL DA NEIDE | 0 | 35 | 0.2144 |
+| CONEXÃO FOOD HALL | Conexão Tanino | 43 | 35 | 0.2117 |
+| Z ZEST | Z ZEXTER | 35 | 35 | 0.2096 |
+| CEMINHA | Cestinha | 41 | 42 | 0.2062 |
+| SYM | SIML | 36 | 41 | 0.2048 |
+| RESTAURANTE MENINA GERAIS | L&J RESTAURANTE | 43 | 43 | 0.2020 |
+| PELLE SANA CLÍNICA ESPECIALIZADA EM TRATAMENTO DE FERIDAS | SAN' MIELLE | 44 | 35 | 0.2004 |
+| GLOBUSINESS CENTER | RA Agrobusiness | 35 | 35 | 0.1945 |
+| CONCEITO Modular e Offsite | CONCEITO 4.0 | 6 | 35 | 0.1936 |
+| RODA | RÓD | 18 | 42 | 0.1895 |
+| P&P CONTABILIDADE E CONSULTORIA EMPRESARIAL | MONETIZEI CONTABILIDADE | 35 | 35 | 0.1891 |
+| SORVETES DO VALE | SORVETES GE-LITTÁ | 35 | 30 | 0.1881 |
+| MAIS MÓVEIS | MAIS ERP | 20 | 42 | 0.1870 |
+| CASTELLA | CASAELLA | 11 | 35 | 0.1868 |
+| SERELEITO.COM | SERELEPE | 42 | 3 | 0.1839 |
+| Quintal Cozinha pra Torar | Quintal Animal | 43 | 43 | 0.1831 |
+| MALU | Maloca | 16 | 41 | 0.1767 |
+| RESGATE | O RESGATE | 9 | 45 | 0.1755 |
+| PEIDO PRONTO | Peido Seco | 35 | 35 | 0.1703 |
+| PASSAQUI ANTECIPA | PASSETUR | 36 | 39 | 0.1679 |
+| PSICO STORE | Psicosfera | 35 | 35 | 0.1659 |
+| MALU GUARDANAPOS DE PAPEL | MALA MÁGICA | 16 | 25 | 0.1646 |
+| SUPERMERCADO NOSSA FAMÍLIA | FAMILY AÇAÍ | 35 | 35 | 0.1624 |
+| SMART IMOBILI | B=SMART | 36 | 37 | 0.1622 |
+| AVESTA | Siesta | 36 | 21 | 0.1574 |
+| DESMONTADORA INOVA ECO PEÇAS | TW montadora | 35 | 37 | 0.1569 |
+| ESTÂNCIA DOS CAMPOS GALILÉIA - MG | ESTÂNCIA NOBRE | 35 | 43 | 0.1537 |
+| SOLUÇÕES CONDOMÍNIOS & SERVIÇOS | FAC Soluções | 36 | 35 | 0.1524 |
+| PLANETA DOS FOGOS | Planeta Feijão | 13 | 35 | 0.1511 |
+| FAZENDA HOMEM DE PEDRA | FAZENDA ÁFRICA | 44 | 35 | 0.1508 |
+| Lumiê Lingerie & Co. | LUMIÈRE | 35 | 14 | 0.1506 |
 
-### 9.4 LISTA COMPLETA - Grupo 1 errados (rotulo=1, escaparam da classificacao) - 14 pares
+### 9.4 LISTA COMPLETA - Grupo 1 errados (rotulo=1, escaparam da classificacao) - 4 pares
 
 _Ordenados por score crescente (colidentes que receberam o menor score primeiro - mais graves para a operacao). Cada linha eh uma colidencia que o modelo deixou passar._
 
 | Marca A | Marca B | cls A | cls B | score |
 | --- | --- | --- | --- | --- |
-| SABOR CASEIRO SELF SERVICE | CASEIROKA O VERDADEIRO SABOR CASEIRO | 43 | 30 | 0.2126 |
-| SHOPPING PIZZA BURGER | CAVEZZO BURGER & PIZZA | 43 | 35 | 0.2265 |
-| RANCHO DO ACARAJÉ | RANCHO 185 | 43 | 30 | 0.2352 |
-| BONITO'S BAR | Bonantos | 43 | 30 | 0.2658 |
-| PSICO STORE | Psicoplace | 35 | 44 | 0.2685 |
-| NEO AGROAMBIENTAL | NEOON | 42 | 44 | 0.2816 |
-| É HIT | HITZ | 38 | 41 | 0.2948 |
-| DIAS SOLAR ENERGIA RENOVÁVEL | Solardyne | 42 | 37 | 0.2964 |
-| AGROPEREIRA | AGRO FRONTEIRA | 35 | 37 | 0.3123 |
-| BONNA PIZZA | Bon Nut | 43 | 30 | 0.3190 |
-| LEMON DECOR | LEMONY | 35 | 44 | 0.3335 |
-| CASCAJU.COM.BR | CASCADO | 29 | 43 | 0.3353 |
-| MARCAS COMUNICAÇÃO VISUAL | Marca Aí | 35 | 45 | 0.3495 |
-| NEO SOLUÇÕES AMBIENTAIS & PROJETOS AGROPÉCUARIOS | Neoin | 42 | 37 | 0.3554 |
+| AVESTA | A.V.I. | 35 | 36 | 0.0776 |
+| SEVERINO APP | SEU SEVERINO | 42 | 35 | 0.0879 |
+| CONTABILIDADE MASTER | contabilidade.com | 35 | 9 | 0.0909 |
+| CAFER PANIFICADORA | Cafezo | 35 | 30 | 0.0931 |
 
 ## 10. Comparativo NN vs heuristica OFTA (no conjunto de teste)
 
@@ -487,8 +430,8 @@ _Recall avaliado com piso de Precision >= 0.90._
 
 | Metrica | NN | Heuristica OFTA | Delta |
 | --- | ---:| ---:| ---:|
-| ROC-AUC | 0.7279 | 0.4697 | +0.2582 |
-| PR-AUC | 0.4882 | 0.1996 | +0.2886 |
+| ROC-AUC | 0.8328 | 0.4412 | +0.3915 |
+| PR-AUC | 0.5326 | 0.1902 | +0.3424 |
 | Recall@P>=0.9 | 0.0000 | 0.0000 | +0.0000 |
 
 ## 11. Importancia das features (Permutation Importance)
@@ -499,51 +442,52 @@ _Recall avaliado com piso de Precision >= 0.90._
 
 | Feature | Importance |
 | --- | --- |
-| spec_lex_idf_avg_common | 0.0299 |
-| spec_cosine_tfidf_char | 0.0264 |
-| cls_b_top_44 | 0.0254 |
-| spec_lex_overlap | 0.0198 |
-| spec_any_misto | 0.0198 |
-| spec_lex_n_common | 0.0184 |
-| num_orto_spread | 0.0178 |
-| ofta_token | 0.0177 |
-| num_fon_best | 0.0158 |
-| spec_kind_b_servico | 0.0151 |
-| graf_overlap_trigram | 0.0124 |
-| ofta_anagram | 0.0122 |
-| tok_overlap | 0.0116 |
-| inter_nome_x_spec_word | 0.0111 |
-| num_fon_worst | 0.0105 |
-| cls_a_top_25 | 0.0103 |
-| n_tokens_excl_b | 0.0096 |
-| ofta_final | 0.0093 |
-| inter_nome_x_same_cls | 0.0090 |
-| num_orto_worst | 0.0088 |
-| n_tokens_common | 0.0083 |
-| cls_diff_abs | 0.0081 |
-| n_tokens_diff | 0.0075 |
-| spec_kind_b_produto | 0.0071 |
-| spec_kind_a_produto | 0.0069 |
-| inter_nome_alto_e_spec_alta | 0.0066 |
-| spec_lex_n_excl_a | 0.0062 |
-| graf_contains | 0.0060 |
-| cls_a_known | 0.0058 |
-| cls_a_top_44 | 0.0057 |
+| spec_item_align_score | 0.0197 |
+| inter_proxy_spec | 0.0191 |
+| spec_cosine_tfidf_char | 0.0174 |
+| cls_pair_prior_pos | 0.0149 |
+| spec_lex_jaccard | 0.0147 |
+| inter_classe_igual_e_spec_proxima | 0.0137 |
+| spec_lex_n_common | 0.0126 |
+| inter_spec_x_same_cls | 0.0112 |
+| graf_jaccard_trigram | 0.0109 |
+| ofta_driver_aproximação | 0.0107 |
+| num_orto_best | 0.0098 |
+| fon_token_eq_share | 0.0093 |
+| spec_kind_a_produto | 0.0084 |
+| brand_b_token_in_spec_a | 0.0083 |
+| cls_b_top_43 | 0.0078 |
+| cls_a_top_9 | 0.0077 |
+| spec_lex_idf_avg_common | 0.0076 |
+| fon_key_eq | 0.0075 |
+| spec_kind_a_servico | 0.0072 |
+| spec_item_top3_mean_cosine | 0.0072 |
+| ofta_driver_fonética | 0.0071 |
+| spec_item_max_cosine_tfidf | 0.0071 |
+| tok_jaccard | 0.0070 |
+| spec_cosine_tfidf_word | 0.0070 |
+| graf_prefix_norm | 0.0069 |
+| cls_pair_chi2_strength | 0.0068 |
+| against_unique_strong_b | 0.0065 |
+| contain_after_strip_a_in_b | 0.0064 |
+| fon_key_lev_sim | 0.0063 |
+| num_fon_spread | 0.0062 |
 
 ### 11.2 Importancia agregada por bloco
 
 | Bloco | Soma | Share |
 | --- | --- | --- |
-| Classe Nice | 0.0936 | 0.1935 |
-| Spec_lex | 0.0866 | 0.1790 |
-| Numerais | 0.0529 | 0.1094 |
-| OFTA | 0.0498 | 0.1029 |
-| Spec_atividade | 0.0490 | 0.1014 |
-| Interacoes | 0.0421 | 0.0870 |
-| Graficas | 0.0378 | 0.0782 |
-| Tokens | 0.0371 | 0.0767 |
-| Spec_cosine | 0.0264 | 0.0546 |
-| Foneticas | 0.0084 | 0.0174 |
+| Classe Nice | 0.0734 | 0.1778 |
+| Spec_atividade | 0.0595 | 0.1441 |
+| Interacoes | 0.0452 | 0.1094 |
+| Spec_lex | 0.0443 | 0.1073 |
+| Outras | 0.0443 | 0.1072 |
+| OFTA | 0.0313 | 0.0757 |
+| Foneticas | 0.0263 | 0.0638 |
+| Numerais | 0.0247 | 0.0599 |
+| Spec_cosine | 0.0243 | 0.0589 |
+| Graficas | 0.0223 | 0.0541 |
+| Tokens | 0.0173 | 0.0419 |
 
 ## 12. Limitacoes
 
@@ -555,10 +499,9 @@ _Recall avaliado com piso de Precision >= 0.90._
 
 ## 13. Recomendacoes
 
-- aumentar epocas e/ou paciencia do early stopping
-- ajustar pos_weight (reduzir se ha overshoot, aumentar se recall esta baixo)
-- revisar features de especificacao (talvez usar embedding PT-BR especifico)
-- considerar mais dados rotulados ou arquitetura maior
+- monitorar drift de score em producao (PSI mensal)
+- retreinar a cada novo lote de pareceres revisados
+- afinar threshold com a area de negocio para custo FN/FP otimo
 - Reavaliar `recall_floor` em conjunto com a area de negocio para calibrar custo de FN/FP.
 - Retreinar a cada novo lote significativo de pareceres revisados.
 - Monitorar drift de score em producao (PSI sobre `score_nn`).

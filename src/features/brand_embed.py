@@ -57,7 +57,12 @@ class BrandEmbedder:
     def dim(self) -> int:
         if self._dim is None:
             m = self._ensure_model()
-            self._dim = int(m.get_sentence_embedding_dimension())
+            getter = getattr(m, "get_embedding_dimension", None) or getattr(
+                m, "get_sentence_embedding_dimension", None
+            )
+            if getter is None:
+                raise RuntimeError("SentenceTransformer sem getter de dimensao.")
+            self._dim = int(getter())
         return self._dim
 
     def load_cache(self) -> None:
