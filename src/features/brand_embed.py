@@ -23,6 +23,17 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+def _preferred_device() -> str:
+    """Escolhe device para SentenceTransformer (GPU se disponível)."""
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return "cuda"
+    except Exception:
+        pass
+    return "cpu"
+
 
 @dataclass
 class BrandEmbedder:
@@ -50,7 +61,9 @@ class BrandEmbedder:
             return self._model
         from sentence_transformers import SentenceTransformer
         logger.info("Carregando SentenceTransformer para marcas: %s", self.model_name)
-        self._model = SentenceTransformer(self.model_name)
+        device = _preferred_device()
+        logger.info("SentenceTransformer device (brand): %s", device)
+        self._model = SentenceTransformer(self.model_name, device=device)
         return self._model
 
     @property
@@ -95,15 +108,29 @@ class BrandEmbedder:
 
     def encode(self, texts: Iterable[str]) -> np.ndarray:
         texts = [str(t)[: self.max_chars] for t in texts]
-        out = np.zeros((len(texts), self.dim), dtype=np.float32)
+        d = self.dim
+        stale = [k for k, v in self._cache.items() if getattr(v, "shape", (0,))[0] != d]
+        for k in stale:
+            del self._cache[k]
+        if stale:
+            logger.warning(
+                "Cache brand: removidas %d entradas com dim != %d "
+                "(modelo ou cache incompativel).",
+                len(stale),
+                d,
+            )
+
+        out = np.zeros((len(texts), d), dtype=np.float32)
 
         missing_idx: list[int] = []
         missing_text: list[str] = []
         for i, t in enumerate(texts):
             cached = self._cache.get(t)
-            if cached is not None:
+            if cached is not None and cached.shape[0] == d:
                 out[i] = cached
             else:
+                if cached is not None:
+                    del self._cache[t]
                 missing_idx.append(i)
                 missing_text.append(t)
 

@@ -8,7 +8,7 @@ import logging
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
@@ -20,7 +20,7 @@ from .model.dataset import BalancingConfig, SplitConfig
 from .model.evaluate import EvalMetrics, predict_scores
 from .model.mlp import BrandSimilarityMLP, MLPConfig
 from .model.train import TrainConfig, TrainResult
-from .pipeline.preprocessor import FeaturePreprocessor
+from .pipeline.preprocessor import FeaturePreprocessor, _safe_progress
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +67,9 @@ def build_model_config_dict(
     dataset_report: DatasetReport,
     state_dict: dict[str, torch.Tensor],
     embedding_used: bool,
+    architecture_bagging: dict[str, Any] | None = None,
+    logreg_bagging: dict[str, Any] | None = None,
+    hybrid_bagging: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     arch_dict = (
         mlp_config.to_dict() if hasattr(mlp_config, "to_dict") else dict(mlp_config)
@@ -103,6 +106,12 @@ def build_model_config_dict(
         "dataset_report": dataset_report.to_dict(),
         "state_dict_b64": _state_dict_to_b64(state_dict),
     }
+    if architecture_bagging:
+        cfg["architecture_bagging"] = architecture_bagging
+    if logreg_bagging:
+        cfg["logreg_bagging"] = logreg_bagging
+    if hybrid_bagging:
+        cfg["hybrid_bagging"] = hybrid_bagging
     return _to_jsonable(cfg)
 
 
@@ -134,11 +143,18 @@ def save_enriched_dataframe(
     out_parquet: str | Path | None = None,
     label_col: str | None = None,
     version: str = __version__,
+    *,
+    progress_callback: Callable[[float, str], None] | None = None,
 ) -> tuple[Path, Path | None]:
     """Salva o dataframe enriquecido em Excel e Parquet."""
+    cb = progress_callback
+    _safe_progress(cb, 0.05, "A copiar dados base...")
     df = df_original.copy().reset_index(drop=True)
+    _safe_progress(cb, 0.18, "A montar DataFrame de features...")
     feat_df = pd.DataFrame(feature_matrix, columns=feature_names)
+    _safe_progress(cb, 0.32, "A unir colunas (original + features)...")
     enriched = pd.concat([df, feat_df], axis=1)
+    _safe_progress(cb, 0.42, "A adicionar scores e metadados...")
     enriched["score_heuristico_ofta"] = score_heuristic
     enriched["score_nn"] = score_nn
     enriched["classe_prevista"] = (score_nn >= threshold).astype(int)
@@ -152,16 +168,23 @@ def save_enriched_dataframe(
 
     out_xlsx = Path(out_xlsx)
     out_xlsx.parent.mkdir(parents=True, exist_ok=True)
+    _safe_progress(
+        cb, 0.48,
+        f"A gravar Excel ({len(enriched):,} linhas x {enriched.shape[1]} colunas) — pode demorar...",
+    )
     enriched.to_excel(out_xlsx, index=False)
     logger.info("Planilha enriquecida salva em %s (%d linhas, %d colunas)", out_xlsx, len(enriched), enriched.shape[1])
+    _safe_progress(cb, 0.88, "Excel gravado.")
 
     parquet_path: Path | None = None
     if out_parquet is not None:
         parquet_path = Path(out_parquet)
         parquet_path.parent.mkdir(parents=True, exist_ok=True)
+        _safe_progress(cb, 0.92, "A gravar Parquet...")
         enriched.to_parquet(parquet_path, index=False)
         logger.info("Parquet enriquecido salvo em %s", parquet_path)
 
+    _safe_progress(cb, 1.0, "Visao enriquecida gravada.")
     return out_xlsx, parquet_path
 
 

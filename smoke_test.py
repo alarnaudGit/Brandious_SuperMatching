@@ -107,7 +107,12 @@ def main(
     X_va, y_va = X[idx_va], y[idx_va]
     X_te, y_te = X[idx_te], y[idx_te]
 
-    bal = BalancingConfig(undersample_neg_ratio=2.5, oversample_pos_factor=2.0, seed=42)
+    bal = BalancingConfig(
+        undersample_neg_ratio=2.5,
+        oversample_pos_factor=2.0,
+        training_balance="equal",
+        seed=42,
+    )
     train_cfg = TrainConfig(
         epochs=epochs, batch_size=64, lr=1e-3, early_stopping_patience=20, seed=42,
         architecture=architecture, loss_name=loss_name,

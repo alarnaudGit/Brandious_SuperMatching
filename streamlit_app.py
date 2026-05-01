@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -21,12 +22,6 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src import __version__
-from src.artifacts import (  # noqa: E402
-    build_model_config_dict,
-    save_enriched_dataframe,
-    save_model_config,
-    save_state_dict,
-)
 from src.data import (  # noqa: E402
     LABEL_COLUMN_CANON,
     DatasetReport,
@@ -35,20 +30,20 @@ from src.data import (  # noqa: E402
 from src.model.dataset import (  # noqa: E402
     BalancingConfig,
     SplitConfig,
-    stratified_split,
+)
+from src.features.feature_dictionary import (  # noqa: E402
+    attach_descriptions,
 )
 from src.model.arch_bagging import (  # noqa: E402
+    MLPRandomRanges,
     predict_architecture_bagging,
     predict_architecture_bagging_components,
-    save_architecture_bagging,
-    train_architecture_bagging,
+    train_random_mlp_bagging,
 )
 from src.model.calibration import PlattCalibrator  # noqa: E402
 from src.model.ensemble import (  # noqa: E402
     EnsembleMember,
     predict_ensemble,
-    save_ensemble,
-    train_ensemble,
 )
 from src.model.evaluate import (  # noqa: E402
     compute_metrics_at_threshold,
@@ -60,29 +55,36 @@ from src.model.evaluate import (  # noqa: E402
 from src.model.explain import (  # noqa: E402
     integrated_gradients_arch_bagging_row,
     integrated_gradients_for_row,
+    integrated_gradients_hybrid_row,
     permutation_importance,
     permutation_importance_arch_bagging,
+    permutation_importance_hybrid,
+    predict_hybrid_bagging,
+    predict_hybrid_bagging_components,
 )
-from src.model.mlp import BrandSimilarityMLP, MLPConfig  # noqa: E402
-from src.model.train import TrainConfig, train_model  # noqa: E402
+from src.model.logreg_bagging import (  # noqa: E402
+    LogRegRandomRanges,
+    train_random_logreg_bagging,
+)
+from src.model.mlp import MLPConfig  # noqa: E402
+from src.model.train import TrainConfig  # noqa: E402
 from src.normalize import calcular_score_complexo, calcular_similaridade_ofta  # noqa: E402
+from src.pipeline_storage import (  # noqa: E402
+    append_registry,
+    collect_download_files,
+    dirs_from_root,
+    export_pipeline_bundle,
+    mirror_latest_to_artifacts,
+    new_pipeline_run_id,
+    prepare_run_directories,
+)
 from src.pipeline.preprocessor import (  # noqa: E402
     BERTIMBAU_BASE_STS,
     BERTIMBAU_LARGE_STS,
     FeaturePreprocessor,
     PreprocessorConfig,
 )
-from src.reports import (  # noqa: E402
-    all_errors_separated,
-    build_report,
-    compare_against_heuristic,
-    feature_summary_stats,
-    features_correlation_with_label,
-    save_report,
-    score_decile_table,
-    score_distribution_stats,
-    top_errors,
-)
+from src.reports import compare_against_heuristic  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 logger = logging.getLogger("streamlit_app")
@@ -118,12 +120,121 @@ def _init_session_state() -> None:
         "score_heuristic_full": None,
         "ensemble_members": None,
         "arch_bagging_members": None,
+        "logreg_bagging_members": None,
         "calibrator": None,
         "arch_config_dict": None,
+        "pipeline_run_id": None,
+        "pipeline_run_dir": None,
+        # Status por etapa: dataset / enrichment / training / evaluation /
+        # explainability / manual_test / artifacts.
+        "step_status": {},
+        # Tempos por etapa em segundos.
+        "step_durations": {},
+        # Assinatura do preprocessador usado para gerar a matriz atual.
+        # Usado para detectar drift e avisar o usuario quando mudar
+        # parametros sem regerar as features.
+        "preproc_cfg_signature": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
+
+
+# ---------------------------------------------------------------------------
+# Helpers: status visual e cronometro por etapa
+# ---------------------------------------------------------------------------
+STEP_LABELS = {
+    "dataset": "1. Dataset",
+    "enrichment": "2. Enriquecimento",
+    "training": "3. Treino",
+    "evaluation": "4. Avaliacao",
+    "explainability": "5. Explicabilidade",
+    "manual_test": "6. Teste manual",
+    "artifacts": "7. Artefatos",
+}
+
+
+def _format_duration(seconds: float | None) -> str:
+    if seconds is None:
+        return "--"
+    s = max(0.0, float(seconds))
+    minutes = int(s // 60)
+    secs = s - minutes * 60
+    if minutes >= 1:
+        return f"{minutes}m {secs:04.1f}s"
+    return f"{secs:.2f}s"
+
+
+def _set_step_status(step: str, status: str) -> None:
+    """status in {pending, running, ok, error}."""
+    statuses = dict(st.session_state.get("step_status") or {})
+    statuses[step] = status
+    st.session_state.step_status = statuses
+
+
+def _get_step_status(step: str) -> str:
+    return (st.session_state.get("step_status") or {}).get(step, "pending")
+
+
+def _record_step_duration(step: str, seconds: float) -> None:
+    durations = dict(st.session_state.get("step_durations") or {})
+    durations[step] = float(seconds)
+    st.session_state.step_durations = durations
+
+
+def _status_badge(step: str) -> str:
+    status = _get_step_status(step)
+    icon = {"pending": "[ ]", "running": "[~]", "ok": "[OK]", "error": "[X]"}.get(
+        status, "[ ]",
+    )
+    label = STEP_LABELS.get(step, step)
+    dur = (st.session_state.get("step_durations") or {}).get(step)
+    if dur is not None and status in ("ok", "error"):
+        return f"{icon} {label} ({_format_duration(dur)})"
+    return f"{icon} {label}"
+
+
+def _render_pipeline_progress() -> None:
+    """Renderiza no topo de cada aba o status de todas as etapas + tempo total."""
+    cols = st.columns(len(STEP_LABELS))
+    total = 0.0
+    for col, key in zip(cols, STEP_LABELS.keys()):
+        col.caption(_status_badge(key))
+        dur = (st.session_state.get("step_durations") or {}).get(key)
+        if dur:
+            total += float(dur)
+    if total > 0:
+        st.caption(
+            f"Tempo total acumulado nas etapas concluidas: "
+            f"**{_format_duration(total)}**.",
+        )
+
+
+class StepTimer:
+    """Context manager que mede o tempo de uma etapa e atualiza session_state.
+
+    Uso:
+        with StepTimer("training"):
+            ...
+
+    Marca status `running` ao entrar, `ok` ao sair sem excecao e `error` se
+    houver excecao. Tempo gasto e' gravado em `step_durations[step]`.
+    """
+
+    def __init__(self, step: str) -> None:
+        self.step = step
+        self.t0 = 0.0
+
+    def __enter__(self) -> "StepTimer":
+        self.t0 = time.perf_counter()
+        _set_step_status(self.step, "running")
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        elapsed = time.perf_counter() - self.t0
+        _record_step_duration(self.step, elapsed)
+        _set_step_status(self.step, "error" if exc_type is not None else "ok")
+        return False
 
 
 _init_session_state()
@@ -170,46 +281,146 @@ def render_sidebar() -> dict[str, Any]:
                  "Diminua para deteccao mais agressiva.",
         )
 
-        top_k = st.slider("Top-K classes Nice (one-hot)", 5, 30, 15)
-        tfidf_word_max = st.number_input("TF-IDF word max_features", 1000, 50_000, 20_000, step=1000)
-        tfidf_char_max = st.number_input("TF-IDF char max_features", 1000, 50_000, 10_000, step=1000)
+        top_k = st.slider("Top-K classes Nice (one-hot)", 5, 30, 18)
+        tfidf_word_max = st.number_input("TF-IDF word max_features", 1000, 50_000, 25_000, step=1000)
+        tfidf_char_max = st.number_input("TF-IDF char max_features", 1000, 50_000, 12_000, step=1000)
 
-    with st.sidebar.expander("Arquitetura", expanded=True):
-        arch_options = {
-            "MLP (baseline)": "mlp",
-            "Two-Tower + Cross-Attention": "two_tower",
-            "FT-Transformer": "ft_transformer",
-            "Multi-Task MLP (4 heads)": "multitask",
-        }
-        arch_label = st.selectbox(
-            "Variante (Sprint 2 A/B test)",
-            options=list(arch_options.keys()),
-            index=0,
+    with st.sidebar.expander(
+        "Tamanho do bagging (MLPs + Logisticas)", expanded=True,
+    ):
+        n_per_kind = st.slider(
+            "Modelos por tipo (N)",
+            min_value=1, max_value=100, value=3, step=1,
             help=(
-                "MLP: baseline. Two-Tower: separa nome vs contexto. "
-                "FT-Transformer: cada feature vira um token. "
-                "Multi-Task: backbone unico com 3 heads auxiliares para reforcar generalizacao."
+                "O bagging final tera **2 X N modelos**: N MLPs + N "
+                "regressoes logisticas. O score por par e' a media "
+                "calibrada Platt de todos os 2N modelos."
             ),
         )
-        arch_value = arch_options[arch_label]
-        hidden_str = st.text_input(
-            "Hidden layers (vir-separadas)",
-            value="256,128,64" if arch_value in ("multitask",) else "128,64,32",
+        st.caption(
+            f"Total de modelos no bagging: **{int(n_per_kind) * 2}** "
+            f"({int(n_per_kind)} MLPs + {int(n_per_kind)} log\u00edsticas)."
         )
-        dropout = st.slider(
-            "Dropout", 0.0, 0.7, 0.45 if arch_value == "multitask" else 0.3, 0.05,
+
+    with st.sidebar.expander(
+        "Bagging - Parametros das MLPs (sorteio)", expanded=False,
+    ):
+        n_layers_str = st.text_input(
+            "Numero de camadas ocultas (escolhas)",
+            value="2,3,4",
+            help="Lista vir-separada de quantas camadas a MLP pode ter.",
         )
-        bn = st.checkbox("BatchNorm", value=True)
-        activation = st.selectbox("Ativacao", ["relu", "gelu", "leakyrelu", "tanh"], index=0)
+        sizes_str = st.text_input(
+            "Tamanhos possiveis de camada",
+            value="32,64,96,128,192,256,384,512",
+            help=(
+                "Pool de neuronios por camada para sortear. Em arquiteturas "
+                "monotonicamente decrescentes, cada camada subsequente nao "
+                "tera mais neuronios que a anterior."
+            ),
+        )
+        monotonic = st.checkbox(
+            "Forcar arquitetura monotonicamente decrescente",
+            value=True,
+            help="Ex.: [256, 128, 64] em vez de [64, 256, 32].",
+        )
+        col_drp1, col_drp2 = st.columns(2)
+        dropout_min = col_drp1.slider(
+            "Dropout min", 0.0, 0.6, 0.10, 0.05,
+        )
+        dropout_max = col_drp2.slider(
+            "Dropout max", 0.05, 0.7, 0.50, 0.05,
+        )
+        if dropout_max < dropout_min:
+            dropout_max = dropout_min
+        activation_choices = st.multiselect(
+            "Ativacoes possiveis",
+            options=["relu", "gelu", "leakyrelu", "tanh"],
+            default=["relu", "gelu", "leakyrelu"],
+        )
+        bn_prob = st.slider(
+            "Probabilidade de usar BatchNorm",
+            0.0, 1.0, 0.7, 0.05,
+        )
 
-    with st.sidebar.expander("Treino", expanded=True):
-        epochs = st.slider("Epochs maximas", 5, 200, 60)
-        batch = st.select_slider("Batch size", options=[64, 128, 256, 512, 1024], value=256)
-        lr = st.select_slider("Learning rate", options=[1e-4, 3e-4, 1e-3, 3e-3, 1e-2], value=1e-3)
-        wd = st.select_slider("Weight decay", options=[0.0, 1e-5, 1e-4, 1e-3], value=1e-4)
-        es_patience = st.slider("Early stopping patience (PR-AUC val)", 3, 30, 10)
+    with st.sidebar.expander(
+        "Bagging - Parametros das Logisticas (sorteio)", expanded=False,
+    ):
+        col_c1, col_c2 = st.columns(2)
+        lr_c_min = col_c1.select_slider(
+            "C min (regularizacao)",
+            options=[1e-3, 1e-2, 1e-1, 1.0],
+            value=1e-2,
+            help=(
+                "C menor = mais regularizacao (mais bias, menos variancia)."
+            ),
+        )
+        lr_c_max = col_c2.select_slider(
+            "C max",
+            options=[1.0, 10.0, 100.0],
+            value=10.0,
+        )
+        lr_penalty_choices = st.multiselect(
+            "Penalty possiveis",
+            options=["l2", "l1"],
+            default=["l2", "l1"],
+            help=(
+                "Solver `liblinear` suporta l1 e l2; ambos com class_weight."
+            ),
+        )
+        lr_cw_choices = st.multiselect(
+            "class_weight",
+            options=["none", "balanced"],
+            default=["none", "balanced"],
+            help=(
+                "`balanced` aumenta peso da classe minoritaria automaticamente."
+            ),
+        )
+        lr_use_bootstrap = st.checkbox(
+            "Bootstrap por modelo (amostragem com reposicao)",
+            value=True,
+            help=(
+                "Cada logistica treina sobre uma amostra com reposicao do "
+                "treino balanceado, aumentando diversidade do bagging."
+            ),
+        )
+        lr_max_iter = st.number_input(
+            "max_iter",
+            min_value=200, max_value=10_000, value=2000, step=200,
+        )
 
-    with st.sidebar.expander("Loss & Taticas Sprint 2", expanded=False):
+    with st.sidebar.expander("Treino (otimizacao)", expanded=True):
+        epochs = st.slider("Epochs maximas (cada MLP)", 5, 200, 60)
+        es_patience = st.slider(
+            "Early stopping patience (PR-AUC val)", 3, 30, 10,
+        )
+        col_lr1, col_lr2 = st.columns(2)
+        lr_min = col_lr1.select_slider(
+            "LR min (log-uniform)",
+            options=[1e-5, 3e-5, 1e-4, 3e-4],
+            value=1e-4,
+        )
+        lr_max = col_lr2.select_slider(
+            "LR max (log-uniform)",
+            options=[1e-3, 3e-3, 1e-2, 3e-2],
+            value=3e-3,
+        )
+        col_wd1, col_wd2 = st.columns(2)
+        wd_zero_prob = col_wd1.slider(
+            "Prob. de wd=0", 0.0, 1.0, 0.3, 0.05,
+            help="Quando nao for zero, sortear log-uniforme em [wd_min, wd_max].",
+        )
+        wd_max = col_wd2.select_slider(
+            "Weight decay max",
+            options=[1e-5, 1e-4, 1e-3, 3e-3],
+            value=1e-3,
+        )
+        batch_choices_str = st.text_input(
+            "Batch sizes possiveis",
+            value="128,256,512",
+        )
+
+    with st.sidebar.expander("Loss & Taticas Sprint 2", expanded=True):
         loss_options = {
             "BCE com pos_weight (default)": "bce",
             "Focal (gamma=2, alpha=0.25)": "focal",
@@ -217,7 +428,7 @@ def render_sidebar() -> dict[str, Any]:
             "Focal + Label smoothing (recomendado)": "focal_smoothing",
         }
         loss_label = st.selectbox(
-            "Funcao de perda", options=list(loss_options.keys()), index=0,
+            "Funcao de perda", options=list(loss_options.keys()), index=3,
         )
         loss_value = loss_options[loss_label]
         focal_alpha = st.slider("Focal alpha", 0.05, 0.95, 0.25, 0.05)
@@ -225,41 +436,52 @@ def render_sidebar() -> dict[str, Any]:
         label_smoothing = st.slider("Label smoothing (eps)", 0.0, 0.2, 0.05, 0.01)
 
         mixup_pos = st.slider(
-            "Mixup entre positivos (% por batch)", 0.0, 0.5, 0.0, 0.05,
+            "Mixup entre positivos (% por batch)", 0.0, 0.5, 0.12, 0.05,
             help="Substitui parte dos pos do batch por combinacao convexa de outros pos. 0 desliga.",
         )
         hard_neg = st.checkbox(
-            "Hard Negative Mining (a partir da 5a epoca)", value=False,
+            "Hard Negative Mining (a partir da 5a epoca)", value=True,
             help="Em cada epoca >=5, monta batch com TODOS pos + top-k neg de maior score.",
         )
         symmetry_aug = st.checkbox(
-            "Symmetry augmentation (duplica dataset)", value=False,
+            "Symmetry augmentation (duplica dataset)", value=True,
             help="Aumenta robustez a ordenacao (A,B) vs (B,A).",
         )
 
-    with st.sidebar.expander("Calibracao & Ensemble", expanded=False):
-        use_arch_bagging = st.checkbox(
-            "Bagging das 4 arquiteturas (score final = media)",
-            value=False,
-            help=(
-                "Treina MLP, Two-Tower, FT-Transformer e Multi-Task com os mesmos dados; "
-                "cada um gera score calibrado e o score final e a media. Incompativel com ensemble por seeds."
-            ),
-        )
-        use_calibration = st.checkbox(
-            "Aplicar Platt scaling no validation", value=False,
-            disabled=bool(use_arch_bagging),
-            help="No bagging por arquitetura, a calibracao Platt e aplicada por modelo automaticamente.",
-        )
-        n_seeds = st.slider(
-            "Ensemble: numero de seeds", 1, 5, 1,
-            help="1 = treino unico (modo padrao). 3 = recomendado para reduzir variancia.",
-            disabled=bool(use_arch_bagging),
+    with st.sidebar.expander("Calibracao", expanded=False):
+        st.caption(
+            "No bagging de N MLPs, **cada modelo e' calibrado por Platt no "
+            "validation** automaticamente. O score final e' a media dos K "
+            "scores calibrados.",
         )
 
     with st.sidebar.expander("Balanceamento", expanded=True):
-        under_ratio = st.slider("Undersample neg/pos ratio", 1.0, 10.0, 3.0, 0.5)
-        over_factor = st.slider("Oversample positivos (x)", 1.0, 5.0, 2.0, 0.5)
+        _bal_labels = {
+            "50/50 — replicar positivos ate igualar negativos (apos undersample) [padrao]": "equal",
+            "Legado — oversample por fator (sem igualar contagens)": "legacy",
+        }
+        _bal_choice = st.radio(
+            "Estrategia de treino (classe 1 = colidente)",
+            options=list(_bal_labels.keys()),
+            index=0,
+            help=(
+                "50/50: mesmo numero de linhas positivas e negativas no treino "
+                "(positivos com reposicao). Legado: usa o fator de oversample."
+            ),
+        )
+        training_balance = _bal_labels[_bal_choice]
+        under_ratio = st.slider(
+            "Undersample: max negativos por positivo *original*",
+            1.0, 10.0, 2.5, 0.5,
+            help="Antes do 50/50: limita quantos negativos entram; depois os positivos replicam ate esse total.",
+        )
+        over_factor = st.slider(
+            "Oversample positivos (fator, so modo legado)", 1.0, 5.0, 2.0, 0.5,
+            disabled=(training_balance == "equal"),
+            help="Ignorado no modo 50/50.",
+        )
+        if training_balance == "equal":
+            st.caption("No modo 50/50 o fator de oversample e ignorado; os positivos copiam-se ate igualar os negativos.")
         use_cw = st.checkbox("Usar class weight (pos_weight)", value=True)
         pw_override_use = st.checkbox("Override de pos_weight", value=False)
         pw_override = st.number_input("pos_weight override", 0.5, 30.0, 9.0, 0.5) if pw_override_use else None
@@ -272,6 +494,61 @@ def render_sidebar() -> dict[str, Any]:
         test_size = st.slider("Test size", 0.05, 0.3, 0.15, 0.01)
         val_size = st.slider("Val size", 0.05, 0.3, 0.15, 0.01)
 
+    st.sidebar.divider()
+    st.sidebar.caption(
+        "**Fluxo manual.** Execute as abas em sequencia (1 -> 2 -> 3 -> 4 -> "
+        "5 -> 6 -> 7). Os artefatos sao gravados automaticamente quando o "
+        "treino na aba 3 termina.",
+    )
+
+    def _parse_int_list(s: str, fallback: list[int]) -> list[int]:
+        try:
+            out = [int(x.strip()) for x in s.split(",") if x.strip()]
+            return out or fallback
+        except ValueError:
+            return fallback
+
+    n_layers_choices = _parse_int_list(n_layers_str, [2, 3, 4])
+    layer_size_choices = _parse_int_list(
+        sizes_str, [32, 64, 96, 128, 192, 256, 384, 512],
+    )
+    batch_choices = _parse_int_list(batch_choices_str, [128, 256, 512])
+
+    mlp_ranges = MLPRandomRanges(
+        n_layers_choices=n_layers_choices,
+        layer_size_choices=layer_size_choices,
+        monotonic_decreasing=bool(monotonic),
+        dropout_min=float(dropout_min),
+        dropout_max=float(dropout_max),
+        activation_choices=tuple(activation_choices) or ("relu",),
+        batchnorm_prob=float(bn_prob),
+        lr_log_min=float(lr_min),
+        lr_log_max=float(lr_max),
+        wd_zero_prob=float(wd_zero_prob),
+        wd_log_min=1e-5,
+        wd_log_max=float(wd_max),
+        batch_size_choices=tuple(batch_choices),
+    )
+
+    logreg_cw_pool: list[str | None] = []
+    for cw in lr_cw_choices:
+        if isinstance(cw, str) and cw.lower() == "none":
+            logreg_cw_pool.append(None)
+        else:
+            logreg_cw_pool.append(str(cw))
+    if not logreg_cw_pool:
+        logreg_cw_pool = [None]
+
+    logreg_ranges = LogRegRandomRanges(
+        c_log_min=float(lr_c_min),
+        c_log_max=float(lr_c_max),
+        penalty_choices=tuple(lr_penalty_choices) or ("l2",),
+        class_weight_choices=tuple(logreg_cw_pool),
+        solver="liblinear",
+        max_iter=int(lr_max_iter),
+        bootstrap_train=bool(lr_use_bootstrap),
+    )
+
     return {
         "preproc_cfg": PreprocessorConfig(
             tfidf_word_max_features=int(tfidf_word_max),
@@ -282,15 +559,10 @@ def render_sidebar() -> dict[str, Any]:
             use_brand_embeddings=bool(use_brand_emb),
             generic_df_threshold=float(generic_df) / 100.0,
         ),
-        "architecture": str(arch_value),
-        "hidden_dims": [int(x.strip()) for x in hidden_str.split(",") if x.strip()],
-        "dropout": float(dropout),
-        "use_batchnorm": bool(bn),
-        "activation": str(activation),
+        "n_per_kind": int(n_per_kind),
+        "mlp_ranges": mlp_ranges,
+        "logreg_ranges": logreg_ranges,
         "epochs": int(epochs),
-        "batch_size": int(batch),
-        "lr": float(lr),
-        "weight_decay": float(wd),
         "es_patience": int(es_patience),
         "loss_name": str(loss_value),
         "focal_alpha": float(focal_alpha),
@@ -299,9 +571,7 @@ def render_sidebar() -> dict[str, Any]:
         "mixup_pos": float(mixup_pos),
         "hard_neg_mining": bool(hard_neg),
         "symmetry_aug": bool(symmetry_aug),
-        "use_calibration": bool(use_calibration),
-        "use_arch_bagging": bool(use_arch_bagging),
-        "n_seeds": int(n_seeds),
+        "training_balance": str(training_balance),
         "under_ratio": float(under_ratio),
         "over_factor": float(over_factor),
         "use_cw": bool(use_cw),
@@ -311,6 +581,416 @@ def render_sidebar() -> dict[str, Any]:
         "test_size": float(test_size),
         "val_size": float(val_size),
     }
+
+
+# ---------------------------------------------------------------------------
+# Pipeline automatico (enriquecimento + treino + artefatos)
+# ---------------------------------------------------------------------------
+def _reset_downstream_pipeline_state() -> None:
+    """Limpa estado derivado do dataset apos novo carregamento."""
+    for k in (
+        "preprocessor",
+        "feature_matrix",
+        "feature_names",
+        "splits",
+        "model",
+        "train_result",
+        "train_cfg",
+        "mlp_cfg",
+        "eval_metrics_test",
+        "threshold_optimal",
+        "threshold_policy",
+        "history",
+        "importance_top",
+        "ensemble_members",
+        "arch_bagging_members",
+        "logreg_bagging_members",
+        "calibrator",
+        "pipeline_run_id",
+        "pipeline_run_dir",
+    ):
+        st.session_state[k] = None if k != "history" else []
+    st.session_state.threshold_optimal = 0.5
+    st.session_state.stop_train = False
+    st.session_state.step_status = {}
+    st.session_state.step_durations = {}
+    st.session_state.preproc_cfg_signature = None
+
+
+_PREPROC_FIELDS_LABELS: dict[str, str] = {
+    "tfidf_word_max_features": "TF-IDF word max_features",
+    "tfidf_char_max_features": "TF-IDF char max_features",
+    "top_k_classes": "Top-K classes Nice",
+    "use_embeddings": "Embeddings semanticos (specs) ativos",
+    "embedding_model": "Modelo de embedding",
+    "use_brand_embeddings": "Brand embeddings ativos",
+    "generic_df_threshold": "Limiar DF de tokens genericos",
+}
+
+
+def _preproc_cfg_signature(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Snapshot dos parametros do preprocessador relevantes para invalidacao
+    da matriz de features."""
+    pc = cfg.get("preproc_cfg")
+    if pc is None:
+        return {}
+    out: dict[str, Any] = {}
+    for k in _PREPROC_FIELDS_LABELS:
+        v = getattr(pc, k, None)
+        out[k] = v if not isinstance(v, float) else round(float(v), 8)
+    return out
+
+
+def _diff_preproc_signatures(
+    old: dict[str, Any], new: dict[str, Any],
+) -> list[tuple[str, Any, Any]]:
+    """Devolve lista (label, valor_antigo, valor_novo) com os campos que
+    mudaram entre duas assinaturas."""
+    diffs: list[tuple[str, Any, Any]] = []
+    for k, label in _PREPROC_FIELDS_LABELS.items():
+        ov = old.get(k)
+        nv = new.get(k)
+        if ov != nv:
+            diffs.append((label, ov, nv))
+    return diffs
+
+
+def _render_preproc_drift_warning(cfg: dict[str, Any]) -> bool:
+    """Avisa se os parametros do preprocessador mudaram desde o ultimo
+    enriquecimento. Retorna True se houve drift."""
+    used = st.session_state.get("preproc_cfg_signature")
+    if not used:
+        return False
+    current = _preproc_cfg_signature(cfg)
+    diffs = _diff_preproc_signatures(used, current)
+    if not diffs:
+        return False
+    lines = [
+        f"- **{label}**: `{ov}` -> `{nv}`"
+        for label, ov, nv in diffs
+    ]
+    st.warning(
+        "Voce alterou parametros do **pre-processador** desde a ultima "
+        "geracao de features. A matriz em cache **nao reflete** essas "
+        "mudancas. Para usa-las, regenere as features na **aba 2 "
+        "(Enriquecimento)**.\n\n"
+        "Mudancas detectadas:\n" + "\n".join(lines)
+    )
+    return True
+
+
+def _run_feature_enrichment(
+    cfg: dict[str, Any],
+    df: pd.DataFrame,
+    progress_callback: Any,
+) -> None:
+    preproc = FeaturePreprocessor(cfg["preproc_cfg"])
+    preproc.fit(df, progress_callback=progress_callback)
+    X = preproc.transform(
+        df, scale=True, show_progress=False, progress_callback=progress_callback,
+    )
+    st.session_state.preprocessor = preproc
+    st.session_state.feature_matrix = X
+    st.session_state.feature_names = list(preproc.feature_names_ordered)
+    st.session_state.preproc_cfg_signature = _preproc_cfg_signature(cfg)
+
+
+def _get_bagging_lists() -> tuple[list[Any], list[Any]]:
+    """Devolve (mlp_members, logreg_members) do session_state (sempre listas)."""
+    mlps = st.session_state.get("arch_bagging_members") or []
+    lrs = st.session_state.get("logreg_bagging_members") or []
+    return list(mlps), list(lrs)
+
+
+def _has_hybrid_bagging() -> bool:
+    mlps, lrs = _get_bagging_lists()
+    return bool(mlps) or bool(lrs)
+
+
+def _hybrid_predict(X: np.ndarray) -> np.ndarray:
+    """Score agregado do bagging hibrido (MLPs + LogRegs)."""
+    mlps, lrs = _get_bagging_lists()
+    return predict_hybrid_bagging(mlps, lrs, X, apply_calibration=True)
+
+
+def _execute_training_evaluation_export(
+    cfg: dict[str, Any],
+    *,
+    on_epoch_end: Any | None = None,
+    on_variant_start: Any | None = None,
+    success_slot: Any | None = None,
+    emit_final_success: bool = True,
+) -> None:
+    """Split estratificado, treino do bagging de N MLPs aleatorias,
+    metricas de teste e exportacao automatica do bundle."""
+    from sklearn.model_selection import train_test_split as _tts
+
+    df = st.session_state.get("df")
+    X = st.session_state.get("feature_matrix")
+    if df is None or X is None:
+        st.error("Dataset ou matriz de features ausente.")
+        return
+
+    y = df[LABEL_COLUMN_CANON].to_numpy().astype(np.int64)
+    split_cfg = SplitConfig(
+        test_size=cfg["test_size"], val_size=cfg["val_size"], seed=cfg["seed"],
+    )
+    bal = BalancingConfig(
+        undersample_neg_ratio=cfg["under_ratio"],
+        oversample_pos_factor=cfg["over_factor"],
+        training_balance=str(cfg.get("training_balance", "equal")),
+        use_class_weight=cfg["use_cw"],
+        pos_weight_override=cfg["pos_weight_override"],
+        seed=cfg["seed"],
+    )
+    # Hiperparametros base; cada MLP do bagging sobreescreve lr / wd /
+    # batch_size com valores aleatorios (ver `train_random_mlp_bagging`).
+    train_cfg = TrainConfig(
+        epochs=cfg["epochs"],
+        batch_size=256,
+        lr=1e-3,
+        weight_decay=1e-4,
+        early_stopping_patience=cfg["es_patience"],
+        seed=cfg["seed"],
+        architecture="mlp",
+        loss_name=cfg.get("loss_name", "bce"),
+        focal_alpha=cfg.get("focal_alpha", 0.25),
+        focal_gamma=cfg.get("focal_gamma", 2.0),
+        label_smoothing=cfg.get("label_smoothing", 0.05),
+        mixup_pos=cfg.get("mixup_pos", 0.0),
+        hard_neg_mining=cfg.get("hard_neg_mining", False),
+        symmetry_aug=cfg.get("symmetry_aug", False),
+    )
+
+    st.session_state.stop_train = False
+    all_idx = np.arange(len(y))
+    idx_tv, idx_test = _tts(
+        all_idx, test_size=split_cfg.test_size,
+        random_state=split_cfg.seed, stratify=y,
+    )
+    val_rel = split_cfg.val_size / (1.0 - split_cfg.test_size)
+    idx_train, idx_val = _tts(
+        idx_tv, test_size=val_rel,
+        random_state=split_cfg.seed, stratify=y[idx_tv],
+    )
+    X_train, y_train = X[idx_train], y[idx_train]
+    X_val, y_val = X[idx_val], y[idx_val]
+    X_test, y_test = X[idx_test], y[idx_test]
+
+    st.session_state.splits = {
+        "train": (X_train, y_train),
+        "val": (X_val, y_val),
+        "test": (X_test, y_test),
+        "split_cfg": split_cfg,
+        "bal": bal,
+        "idx_train": idx_train,
+        "idx_val": idx_val,
+        "idx_test": idx_test,
+    }
+
+    history: list[dict[str, Any]] = []
+
+    def _default_epoch(info: dict[str, Any]) -> None:
+        history.append(info)
+        st.session_state.history = list(history)
+
+    epoch_cb = on_epoch_end if on_epoch_end is not None else _default_epoch
+
+    feature_names_local = st.session_state.get("feature_names") or []
+    n_models = max(1, min(100, int(cfg.get("n_per_kind", 3))))
+    ranges: MLPRandomRanges = cfg.get("mlp_ranges") or MLPRandomRanges()
+    lr_ranges: LogRegRandomRanges = (
+        cfg.get("logreg_ranges") or LogRegRandomRanges()
+    )
+
+    def _on_variant_start_mlp(key: str, i: int, total: int) -> None:
+        if on_variant_start is None:
+            return
+        try:
+            on_variant_start(key, i, total, "mlp")
+        except TypeError:
+            on_variant_start(key, i, total)
+
+    def _on_variant_start_lr(key: str, i: int, total: int) -> None:
+        if on_variant_start is None:
+            return
+        try:
+            on_variant_start(key, i, total, "logreg")
+        except TypeError:
+            on_variant_start(key, i, total)
+
+    with st.spinner(
+        f"Treinando bagging hibrido: {n_models} MLPs + {n_models} "
+        f"regressoes logisticas (score final = media calibrada)..."
+    ):
+        members_ab = train_random_mlp_bagging(
+            X_train, y_train, X_val, y_val,
+            train_cfg, bal, list(feature_names_local),
+            n_models=n_models,
+            ranges=ranges,
+            base_seed=int(cfg["seed"]),
+            calibrate=True,
+            on_variant_start=_on_variant_start_mlp,
+            on_epoch_end=epoch_cb,
+            should_stop=lambda: bool(st.session_state.stop_train),
+        )
+        members_lr = train_random_logreg_bagging(
+            X_train, y_train, X_val, y_val,
+            bal, list(feature_names_local),
+            n_models=n_models,
+            ranges=lr_ranges,
+            base_seed=int(cfg["seed"]),
+            calibrate=True,
+            on_variant_start=_on_variant_start_lr,
+            should_stop=lambda: bool(st.session_state.stop_train),
+        )
+    if not members_ab and not members_lr:
+        st.error(
+            "Bagging hibrido nao completou nenhum modelo "
+            "(MLPs e Logisticas falharam)."
+        )
+        return
+    if not members_ab:
+        st.warning(
+            "Nenhuma MLP foi treinada com sucesso; bagging usara apenas as "
+            "regressoes logisticas."
+        )
+    if not members_lr:
+        st.warning(
+            "Nenhuma regressao logistica foi treinada com sucesso; bagging "
+            "usara apenas as MLPs."
+        )
+
+    if members_ab:
+        model = members_ab[0].model
+    else:
+        # Fallback: precisamos de um nn.Module dummy em session_state.model
+        # apenas para artefatos e checks de pre-condicao da UI legada.
+        # Usamos a primeira logreg e marcamos no config.
+        from src.model.mlp import BrandSimilarityMLP, MLPConfig as _MLPConfig
+        model = BrandSimilarityMLP(
+            _MLPConfig(input_dim=int(X.shape[1]))
+        )
+    mlp_pr_vals = [m.best_pr_auc_val for m in members_ab] if members_ab else []
+    lr_pr_vals = [m.train_metric_val for m in members_lr] if members_lr else []
+    all_pr = mlp_pr_vals + lr_pr_vals
+    mean_pr = float(np.mean(all_pr)) if all_pr else 0.0
+    last_epoch = (
+        int(members_ab[-1].best_epoch) if members_ab else 0
+    )
+    last_history = (
+        list(members_ab[-1].history) if members_ab else []
+    )
+    result = type(
+        "RandomMLPBagResult", (),
+        {
+            "best_epoch": last_epoch,
+            "best_pr_auc_val": mean_pr,
+            "history": last_history,
+            "pos_weight_used": 1.0,
+            "n_train_after_balancing": 0,
+        },
+    )()
+
+    st.session_state.arch_bagging_members = members_ab
+    st.session_state.logreg_bagging_members = members_lr
+    st.session_state.ensemble_members = None
+    st.session_state.calibrator = None
+    st.session_state.model = model
+    st.session_state.train_result = result
+    st.session_state.train_cfg = train_cfg
+    if members_ab:
+        st.session_state.mlp_cfg = MLPConfig(
+            input_dim=X.shape[1],
+            hidden_dims=list(
+                members_ab[0].arch_dict.get("hidden_dims", [128, 64, 32])
+            ),
+            dropout=float(members_ab[0].arch_dict.get("dropout", 0.3)),
+            use_batchnorm=bool(
+                members_ab[0].arch_dict.get("use_batchnorm", True)
+            ),
+            activation=str(
+                members_ab[0].arch_dict.get("activation", "relu")
+            ),
+        )
+    else:
+        st.session_state.mlp_cfg = MLPConfig(input_dim=X.shape[1])
+
+    val_scores = predict_hybrid_bagging(
+        members_ab, members_lr, X_val, apply_calibration=True,
+    )
+    thr_opt, thr_policy = find_optimal_threshold(
+        y_val, val_scores, recall_floor=cfg["recall_floor"],
+    )
+    st.session_state.threshold_optimal = float(thr_opt)
+    st.session_state.threshold_policy = thr_policy
+
+    test_scores = predict_hybrid_bagging(
+        members_ab, members_lr, X_test, apply_calibration=True,
+    )
+    em = compute_metrics_at_threshold(y_test, test_scores, threshold=thr_opt)
+    st.session_state.eval_metrics_test = em
+
+    _export_ok = False
+    try:
+        _rid = new_pipeline_run_id()
+        _dirs = prepare_run_directories(PROJECT_ROOT, _rid)
+        _imp_top, _meta = export_pipeline_bundle(
+            project_root=PROJECT_ROOT,
+            dirs=_dirs,
+            df=st.session_state.df,
+            X=st.session_state.feature_matrix,
+            names=list(st.session_state.feature_names or []),
+            splits=st.session_state.splits,
+            model=st.session_state.model,
+            preproc=st.session_state.preprocessor,
+            train_cfg=st.session_state.train_cfg,
+            train_result=st.session_state.train_result,
+            threshold_opt=float(thr_opt),
+            threshold_policy=thr_policy,
+            df_report=st.session_state.get("df_report"),
+            history=list(st.session_state.history) if st.session_state.history else None,
+            ensemble_members=None,
+            arch_bagging_members=st.session_state.get("arch_bagging_members"),
+            logreg_bagging_members=st.session_state.get(
+                "logreg_bagging_members"
+            ),
+            calibrator=None,
+            importance_top=st.session_state.get("importance_top"),
+            auto_imp=True,
+            progress_callback_enriched=None,
+        )
+        if _imp_top is not None:
+            st.session_state.importance_top = _imp_top
+        append_registry(PROJECT_ROOT, {"id": _rid, **_meta})
+        mirror_latest_to_artifacts(PROJECT_ROOT, _dirs)
+        st.session_state.pipeline_run_id = _rid
+        st.session_state.pipeline_run_dir = str(_dirs["root"])
+        _export_ok = True
+    except Exception as _pex:  # noqa: BLE001
+        logger.exception("Gravacao automatica do pipeline falhou: %s", _pex)
+
+    _pdir = st.session_state.get("pipeline_run_dir")
+    if _export_ok and _pdir:
+        _pextra = f" Artefatos: `{_pdir}` (+ espelho em `artifacts/`)."
+    elif not _export_ok:
+        _pextra = " Aviso: exportacao automatica do pipeline falhou (ver logs)."
+    else:
+        _pextra = ""
+    msg = (
+        f"Treino concluido (bagging hibrido: {len(members_ab)} MLPs + "
+        f"{len(members_lr)} regressoes logisticas, calibrado Platt por "
+        f"modelo). Epoca otima da ultima MLP: {result.best_epoch}, val "
+        f"PR-AUC medio (todos os modelos) = {result.best_pr_auc_val:.4f}. "
+        f"Threshold otimo (val) = {thr_opt:.3f}. Test PR-AUC = {em.pr_auc:.4f}, "
+        f"Recall = {em.recall:.3f}.{_pextra}"
+    )
+    if not emit_final_success:
+        return
+    if success_slot is not None:
+        success_slot.success(msg)
+    else:
+        st.success(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -327,8 +1007,13 @@ TABS = [
 ]
 
 
-def tab_upload_eda() -> None:
+def tab_upload_eda(cfg: dict[str, Any]) -> None:
     st.header("1. Upload & EDA")
+    _render_pipeline_progress()
+    st.caption(
+        "**Fluxo manual:** carregue o dataset aqui e depois siga para a aba "
+        "**2. Enriquecimento**.",
+    )
 
     default_path = PROJECT_ROOT / "dataframe_final_colidencias.xlsx"
     use_default = st.checkbox(
@@ -345,10 +1030,19 @@ def tab_upload_eda() -> None:
             file_bytes = upload.read()
 
     if file_bytes and st.button("Carregar e validar dataset", type="primary"):
-        with st.spinner("Carregando e validando..."):
-            df, report = load_dataframe_from_bytes(file_bytes)
-            st.session_state.df = df
-            st.session_state.df_report = report
+        try:
+            with StepTimer("dataset"):
+                with st.spinner("Carregando e validando..."):
+                    df, report = load_dataframe_from_bytes(file_bytes)
+                _reset_downstream_pipeline_state()
+                st.session_state.df = df
+                st.session_state.df_report = report
+                _set_step_status("dataset", "ok")
+        except Exception as exc:  # noqa: BLE001
+            _set_step_status("dataset", "error")
+            logger.exception("Falha ao carregar dataset: %s", exc)
+            st.error(f"Falha ao carregar dataset: {exc}")
+            return
 
     df: pd.DataFrame | None = st.session_state.get("df")
     report: DatasetReport | None = st.session_state.get("df_report")
@@ -382,26 +1076,58 @@ def tab_upload_eda() -> None:
 
 def tab_enrichment(cfg: dict[str, Any]) -> None:
     st.header("2. Enriquecimento de features")
+    _render_pipeline_progress()
 
     df = st.session_state.get("df")
     if df is None:
-        st.info("Carregue um dataset na aba 1.")
+        st.info(
+            "Carregue um dataset na aba **1. Upload & EDA** antes de "
+            "executar esta etapa.",
+        )
         return
 
     st.write(
         "Fitta TF-IDF/embeddings e gera a matriz de features na ordem canonica. "
-        "Esta etapa pode demorar (~minutos com embeddings)."
+        "Os defaults do sidebar favorecem qualidade (BERTimbau-large, "
+        "TF-IDF largo, Sprint 2 completo); esta etapa pode demorar varios "
+        "minutos."
     )
 
+    drift = _render_preproc_drift_warning(cfg)
+    if not drift and st.session_state.get("feature_matrix") is not None:
+        st.info(
+            "Matriz de features ja gerada nesta sessao. So precisa rerodar "
+            "esta etapa se voce alterar **parametros do pre-processador** "
+            "no sidebar (TF-IDF, embeddings, top-K classes, generic_df). "
+            "Mudancas em parametros de **treino** nao exigem reenriquecer.",
+        )
+
     if st.button("Gerar features", type="primary"):
-        with st.spinner("Pre-processando especificacoes e ajustando vectorizers..."):
-            preproc = FeaturePreprocessor(cfg["preproc_cfg"])
-            preproc.fit(df)
-            X = preproc.transform(df, scale=True, show_progress=True)
-        st.session_state.preprocessor = preproc
-        st.session_state.feature_matrix = X
-        st.session_state.feature_names = list(preproc.feature_names_ordered)
-        st.success(f"Matriz gerada: shape {X.shape}, {len(preproc.feature_names_ordered)} features.")
+        prog = st.progress(0, text="A iniciar enriquecimento...")
+
+        def _on_feat_progress(p: float, msg: str) -> None:
+            prog.progress(
+                min(1.0, max(0.0, float(p))), text=str(msg)[:95],
+            )
+
+        try:
+            with StepTimer("enrichment"):
+                _run_feature_enrichment(
+                    cfg, df, progress_callback=_on_feat_progress,
+                )
+            prog.progress(1.0, text="Features geradas com sucesso.")
+            X = st.session_state.get("feature_matrix")
+            names = st.session_state.get("feature_names") or []
+            st.success(
+                f"Matriz gerada: shape "
+                f"{X.shape if X is not None else '?'}, "
+                f"{len(names)} features. Proxima etapa: aba **3. Treino**.",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Enriquecimento falhou: %s", exc)
+            st.error(f"Enriquecimento falhou: {exc}")
+            prog.progress(0.0, text="Erro.")
+            return
 
     preproc: FeaturePreprocessor | None = st.session_state.get("preprocessor")
     X = st.session_state.get("feature_matrix")
@@ -537,6 +1263,7 @@ def _draw_history(history: list[dict[str, float]]) -> None:
 
 def tab_train(cfg: dict[str, Any]) -> None:
     st.header("3. Treino em tempo real")
+    _render_pipeline_progress()
 
     st.markdown(
         """
@@ -548,10 +1275,19 @@ indica colidencia. O treino acontece em **epocas** - cada epoca e uma passada
 completa pelos pares de marcas. A cada epoca o modelo ajusta seus pesos um pouco
 para errar menos.
 
+**Padroes atuais (qualidade > velocidade)**
+
+- Balanceamento **50/50** no treino (positivos com reposicao ate igualar negativos apos undersample).
+- **Bagging hibrido**: para o N escolhido no sidebar treina-se **N MLPs aleatorias + N regressoes logisticas aleatorias** (total = 2 X N modelos). Cada modelo e' calibrado por Platt no validation; o score final e' a **media das 2 X N probabilidades calibradas**.
+- MLPs sorteiam arquitetura, dropout, ativacao, lr, weight decay e batch size; logisticas sorteiam C, penalty (l1/l2) e class_weight (none/balanced).
+- Loss **Focal + label smoothing** (so MLPs), mixup de positivos, **hard negative mining** e **simetria (A,B)/(B,A)**.
+- Mais epocas e paciencia de early stopping; embeddings **BERTimbau-large** e TF-IDF mais largos no enriquecimento.
+
 **O que voce ve abaixo**
 
-- **Loss por epoca**: o erro medio que o modelo esta cometendo. **Deve cair com o
-  tempo**. Se ficar oscilando ou crescer, o aprendizado nao esta convergindo.
+- **Loss por epoca** (apenas MLPs): as logisticas treinam por solver fechado (sem epocas),
+  entao os graficos de loss/metricas por epoca cobrem somente as MLPs do bagging.
+  **Loss deve cair com o tempo**. Se ficar oscilando ou crescer, o aprendizado nao esta convergindo.
 - **Metricas de validacao**: medidas em pares que o modelo NAO viu durante o treino,
   para detectar se ele esta apenas decorando os exemplos (overfit).
   - **PR-AUC**: principal metrica neste projeto. Deve **subir** com as epocas.
@@ -585,44 +1321,26 @@ para errar menos.
     df = st.session_state.get("df")
     X = st.session_state.get("feature_matrix")
     if df is None or X is None:
-        st.info("Carregue o dataset e gere as features primeiro.")
+        st.info(
+            "Carregue o dataset (aba 1) e gere as features (aba 2) antes "
+            "de treinar.",
+        )
         return
 
-    y = df[LABEL_COLUMN_CANON].to_numpy().astype(np.int64)
-    split_cfg = SplitConfig(test_size=cfg["test_size"], val_size=cfg["val_size"], seed=cfg["seed"])
-    bal = BalancingConfig(
-        undersample_neg_ratio=cfg["under_ratio"],
-        oversample_pos_factor=cfg["over_factor"],
-        use_class_weight=cfg["use_cw"],
-        pos_weight_override=cfg["pos_weight_override"],
-        seed=cfg["seed"],
-    )
-    train_cfg = TrainConfig(
-        epochs=cfg["epochs"],
-        batch_size=cfg["batch_size"],
-        lr=cfg["lr"],
-        weight_decay=cfg["weight_decay"],
-        early_stopping_patience=cfg["es_patience"],
-        seed=cfg["seed"],
-        architecture=cfg.get("architecture", "mlp"),
-        loss_name=cfg.get("loss_name", "bce"),
-        focal_alpha=cfg.get("focal_alpha", 0.25),
-        focal_gamma=cfg.get("focal_gamma", 2.0),
-        label_smoothing=cfg.get("label_smoothing", 0.05),
-        mixup_pos=cfg.get("mixup_pos", 0.0),
-        hard_neg_mining=cfg.get("hard_neg_mining", False),
-        symmetry_aug=cfg.get("symmetry_aug", False),
-    )
-    mlp_cfg = MLPConfig(
-        input_dim=X.shape[1],
-        hidden_dims=list(cfg["hidden_dims"]),
-        dropout=cfg["dropout"],
-        use_batchnorm=cfg["use_batchnorm"],
-        activation=cfg["activation"],
+    _render_preproc_drift_warning(cfg)
+
+    n_models = max(1, min(100, int(cfg.get("n_per_kind", 3))))
+    st.caption(
+        f"Sera treinado um bagging hibrido de **{n_models} MLPs + {n_models} "
+        f"regressoes logisticas** (total = **{2 * n_models} modelos**) "
+        f"reusando a matriz de features ja em cache "
+        f"({X.shape[0]:,} pares X {X.shape[1]:,} features). "
+        f"Apos o sucesso, os artefatos sao gravados automaticamente em "
+        f"`pipelines/<run_id>/` e espelhados em `artifacts/`.",
     )
 
     c1, c2 = st.columns(2)
-    train_btn = c1.button("Treinar modelo", type="primary")
+    train_btn = c1.button("Treinar bagging hibrido", type="primary")
     stop_btn = c2.button("Parar treino")
     if stop_btn:
         st.session_state.stop_train = True
@@ -636,30 +1354,6 @@ para errar menos.
         st.session_state.stop_train = False
         st.session_state.history = []
 
-        from sklearn.model_selection import train_test_split as _tts
-        all_idx = np.arange(len(y))
-        idx_tv, idx_test = _tts(
-            all_idx, test_size=split_cfg.test_size, random_state=split_cfg.seed, stratify=y,
-        )
-        val_rel = split_cfg.val_size / (1.0 - split_cfg.test_size)
-        idx_train, idx_val = _tts(
-            idx_tv, test_size=val_rel, random_state=split_cfg.seed, stratify=y[idx_tv],
-        )
-        X_train, y_train = X[idx_train], y[idx_train]
-        X_val, y_val = X[idx_val], y[idx_val]
-        X_test, y_test = X[idx_test], y[idx_test]
-
-        st.session_state.splits = {
-            "train": (X_train, y_train),
-            "val": (X_val, y_val),
-            "test": (X_test, y_test),
-            "split_cfg": split_cfg,
-            "bal": bal,
-            "idx_train": idx_train,
-            "idx_val": idx_val,
-            "idx_test": idx_test,
-        }
-
         history: list[dict[str, float]] = []
 
         def on_epoch_end(info: dict[str, Any]) -> None:
@@ -668,8 +1362,13 @@ para errar menos.
             df_h = pd.DataFrame(history)
             with chart_loss.container():
                 fig = go.Figure()
-                fig.add_trace(go.Scatter(x=df_h["epoch"], y=df_h["train_loss"], name="train_loss"))
-                fig.update_layout(title="Loss por epoca", xaxis_title="epoca", yaxis_title="loss", height=320)
+                fig.add_trace(go.Scatter(
+                    x=df_h["epoch"], y=df_h["train_loss"], name="train_loss",
+                ))
+                fig.update_layout(
+                    title="Loss por epoca", xaxis_title="epoca",
+                    yaxis_title="loss", height=320,
+                )
                 st.plotly_chart(fig, use_container_width=True)
             with chart_metrics.container():
                 fig2 = go.Figure()
@@ -680,172 +1379,54 @@ para errar menos.
                     ("val_f1@0.5", "val F1@0.5"),
                 ]:
                     if col in df_h.columns:
-                        fig2.add_trace(go.Scatter(x=df_h["epoch"], y=df_h[col], name=name))
-                fig2.update_layout(title="Metricas de validacao", xaxis_title="epoca", height=320)
+                        fig2.add_trace(go.Scatter(
+                            x=df_h["epoch"], y=df_h[col], name=name,
+                        ))
+                fig2.update_layout(
+                    title="Metricas de validacao", xaxis_title="epoca",
+                    height=320,
+                )
                 st.plotly_chart(fig2, use_container_width=True)
             with table_slot.container():
                 st.dataframe(df_h.tail(10), use_container_width=True)
-            status_slot.info(f"Epoca {info['epoch']} concluida (val PR-AUC = {info['val_pr_auc']:.4f}).")
+            status_slot.info(
+                f"Epoca {info['epoch']} concluida "
+                f"(val PR-AUC = {info['val_pr_auc']:.4f}).",
+            )
 
-        feature_names_local = st.session_state.get("feature_names") or []
-        n_seeds = int(cfg.get("n_seeds", 1))
-        use_arch_bagging = bool(cfg.get("use_arch_bagging", False))
-        use_ensemble = n_seeds > 1 and not use_arch_bagging
-        seeds = (
-            [cfg["seed"] + i * 1000 for i in range(n_seeds)] if use_ensemble else None
-        )
+        def on_variant_start(
+            key: str, i: int, total: int, kind: str = "mlp",
+        ) -> None:
+            kind_label = (
+                "MLP" if kind == "mlp" else "Regressao Logistica"
+            )
+            tail = (
+                "nova amostra de arquitetura/hiperparametros; "
+                "treino + epocas abaixo referem-se a esta rede."
+                if kind == "mlp" else
+                "nova amostra de C/penalty/class_weight; "
+                "treino fechado (sem epocas) sobre o split balanceado."
+            )
+            status_slot.info(
+                f"**Bagging:** {kind_label} **{i} de {total}** (`{key}`) — "
+                f"{tail}"
+            )
 
-        if use_arch_bagging:
-
-            def on_variant_start(key: str, i: int, total: int) -> None:
-                status_slot.info(
-                    f"Bagging por arquitetura: treinando {key} ({i}/{total})...",
-                )
-
-            with st.spinner("Treinando 4 arquiteturas (score final = media)..."):
-                members_ab = train_architecture_bagging(
-                    X_train,
-                    y_train,
-                    X_val,
-                    y_val,
-                    train_cfg,
-                    bal,
-                    list(feature_names_local),
-                    calibrate=True,
+        try:
+            with StepTimer("training"):
+                _execute_training_evaluation_export(
+                    cfg,
+                    on_epoch_end=on_epoch_end,
                     on_variant_start=on_variant_start,
-                    on_epoch_end=on_epoch_end,
-                    should_stop=lambda: bool(st.session_state.stop_train),
+                    success_slot=status_slot,
                 )
-            if not members_ab:
-                st.error("Bagging por arquitetura nao completou nenhum modelo.")
-                return
-            model = members_ab[0].model
-            mean_pr = float(np.mean([m.best_pr_auc_val for m in members_ab]))
-            result = type(
-                "ArchBagResult",
-                (),
-                {
-                    "best_epoch": int(members_ab[-1].best_epoch),
-                    "best_pr_auc_val": mean_pr,
-                    "history": members_ab[-1].history,
-                    "pos_weight_used": 1.0,
-                    "n_train_after_balancing": 0,
-                },
-            )()
-            st.session_state.arch_bagging_members = members_ab
-            st.session_state.ensemble_members = None
-        elif use_ensemble:
-            with st.spinner(
-                f"Treinando ensemble de {n_seeds} membros (arquitetura: {train_cfg.architecture})..."
-            ):
-                members = train_ensemble(
-                    X_train, y_train, X_val, y_val,
-                    mlp_cfg, train_cfg, bal,
-                    seeds=seeds,
-                    feature_names=feature_names_local,
-                    on_epoch_end=on_epoch_end,
-                    should_stop=lambda: bool(st.session_state.stop_train),
-                    calibrate=cfg.get("use_calibration", False),
-                )
-            if not members:
-                st.error("Ensemble retornou vazio. Verifique os logs.")
-                return
-            model = members[0].model
-            result = type(
-                "EnsResult", (),
-                {
-                    "best_epoch": members[0].best_epoch,
-                    "best_pr_auc_val": float(np.mean([m.best_pr_auc_val for m in members])),
-                    "history": members[0].history,
-                    "pos_weight_used": 1.0,
-                    "n_train_after_balancing": 0,
-                },
-            )()
-            st.session_state.ensemble_members = members
-            st.session_state.arch_bagging_members = None
-        else:
-            with st.spinner(
-                f"Treinando modelo (arquitetura: {train_cfg.architecture})..."
-            ):
-                model, result = train_model(
-                    X_train,
-                    y_train,
-                    X_val,
-                    y_val,
-                    mlp_cfg,
-                    train_cfg,
-                    bal,
-                    on_epoch_end=on_epoch_end,
-                    should_stop=lambda: bool(st.session_state.stop_train),
-                    feature_names=feature_names_local,
-                )
-            st.session_state.ensemble_members = None
-            st.session_state.arch_bagging_members = None
-
-        st.session_state.model = model
-        st.session_state.train_result = result
-        st.session_state.train_cfg = train_cfg
-        st.session_state.mlp_cfg = mlp_cfg
-
-        arch_bag = st.session_state.get("arch_bagging_members")
-        if arch_bag:
-            val_scores = predict_architecture_bagging(
-                arch_bag, X_val, apply_calibration=True,
-            )
-        elif use_ensemble and st.session_state.ensemble_members:
-            val_scores = predict_ensemble(
-                st.session_state.ensemble_members, X_val,
-                apply_calibration=cfg.get("use_calibration", False),
-            )
-        else:
-            val_scores = predict_scores(model, X_val)
-
-        if arch_bag:
-            st.session_state.calibrator = None
-        elif cfg.get("use_calibration", False) and not use_ensemble:
-            calibrator = PlattCalibrator().fit(val_scores, y_val)
-            st.session_state.calibrator = calibrator
-            val_scores = calibrator.transform(val_scores)
-        else:
-            if not use_ensemble:
-                st.session_state.calibrator = None
-
-        thr_opt, thr_policy = find_optimal_threshold(
-            y_val, val_scores, recall_floor=cfg["recall_floor"],
-        )
-        st.session_state.threshold_optimal = float(thr_opt)
-        st.session_state.threshold_policy = thr_policy
-
-        if arch_bag:
-            test_scores = predict_architecture_bagging(
-                arch_bag, X_test, apply_calibration=True,
-            )
-        elif use_ensemble and st.session_state.ensemble_members:
-            test_scores = predict_ensemble(
-                st.session_state.ensemble_members, X_test,
-                apply_calibration=cfg.get("use_calibration", False),
-            )
-        else:
-            test_scores = predict_scores(model, X_test)
-            if st.session_state.calibrator is not None:
-                test_scores = st.session_state.calibrator.transform(test_scores)
-        em = compute_metrics_at_threshold(y_test, test_scores, threshold=thr_opt)
-        st.session_state.eval_metrics_test = em
-
-        if use_arch_bagging:
-            ens_msg = " (bagging 4 arquiteturas, score = media)"
-        else:
-            ens_msg = f" (ensemble {n_seeds} seeds)" if use_ensemble else ""
-        cal_msg = (
-            " (calibrado Platt por modelo)"
-            if arch_bag
-            else (" (calibrado Platt)" if cfg.get("use_calibration", False) else "")
-        )
-        status_slot.success(
-            f"Treino concluido{ens_msg}{cal_msg}. Epoca otima: {result.best_epoch}, "
-            f"val PR-AUC = {result.best_pr_auc_val:.4f}. "
-            f"Threshold otimo (val) = {thr_opt:.3f}. Test PR-AUC = {em.pr_auc:.4f}, Recall = {em.recall:.3f}."
-        )
+            # Avaliacao roda dentro do mesmo passo; marcamos OK explicitamente.
+            _set_step_status("evaluation", "ok")
+            _set_step_status("artifacts", "ok")
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Treino falhou: %s", exc)
+            st.error(f"Treino falhou: {exc}")
+            return
 
     elif st.session_state.history:
         _draw_history(st.session_state.history)
@@ -853,6 +1434,7 @@ para errar menos.
 
 def tab_evaluation() -> None:
     st.header("4. Avaliacao")
+    _render_pipeline_progress()
 
     st.markdown(
         """
@@ -901,26 +1483,29 @@ negativos; idealmente os positivos (em uma cor) ficam concentrados a direita
     model = st.session_state.get("model")
     splits = st.session_state.get("splits")
     ensemble_members = st.session_state.get("ensemble_members")
-    arch_bagging = st.session_state.get("arch_bagging_members")
+    mlp_members, lr_members = _get_bagging_lists()
     calibrator = st.session_state.get("calibrator")
     if model is None or splits is None:
-        st.info("Treine o modelo na aba 3.")
+        st.info("Treine o modelo na aba **3. Treino** primeiro.")
         return
 
     X_test, y_test = splits["test"]
-    if arch_bagging:
-        scores_test = predict_architecture_bagging(
-            arch_bagging, X_test, apply_calibration=True,
+    if mlp_members or lr_members:
+        scores_test = predict_hybrid_bagging(
+            mlp_members, lr_members, X_test, apply_calibration=True,
         )
         st.caption(
-            "Bagging por arquitetura: score final = media dos 4 modelos (Platt por modelo).",
+            f"Bagging hibrido: {len(mlp_members)} MLPs + "
+            f"{len(lr_members)} regressoes logisticas. Score = media "
+            f"das {len(mlp_members) + len(lr_members)} probabilidades "
+            "calibradas (Platt por modelo)."
         )
     elif ensemble_members:
         scores_test = predict_ensemble(
             ensemble_members, X_test, apply_calibration=True,
         )
         st.caption(
-            f"Modo ensemble ativo ({len(ensemble_members)} membros, calibracao aplicada)."
+            f"Modo ensemble (legacy) ativo ({len(ensemble_members)} membros).",
         )
     else:
         scores_test = predict_scores(model, X_test)
@@ -945,9 +1530,32 @@ negativos; idealmente os positivos (em uma cor) ficam concentrados a direita
     _render_production_verdict(em)
 
     cm = em.confusion
-    cm_df = pd.DataFrame(cm, index=["Real 0", "Real 1"], columns=["Pred 0", "Pred 1"])
+    cell_labels = [["TN", "FP"], ["FN", "TP"]]
+    cm_labelled = [
+        [
+            f"{cell_labels[r][c]} ({cm[r][c]:,})"
+            for c in range(2)
+        ]
+        for r in range(2)
+    ]
+    cm_df = pd.DataFrame(
+        cm_labelled,
+        index=[
+            "Real 0 = nao colidente",
+            "Real 1 = colidente",
+        ],
+        columns=[
+            "Pred 0 = nao colidente",
+            "Pred 1 = colidente",
+        ],
+    )
     st.subheader("Matriz de confusao (test)")
     st.dataframe(cm_df, use_container_width=True)
+    st.caption(
+        "Legenda: **TN** verdadeiro negativo | **FP** falso positivo "
+        "| **FN** falso negativo | **TP** verdadeiro positivo. "
+        "Valores entre parenteses sao contagens de pares."
+    )
 
     st.subheader("Curva ROC")
     roc = roc_curve_data(y_test, scores_test)
@@ -994,11 +1602,44 @@ negativos; idealmente os positivos (em uma cor) ficam concentrados a direita
                 )
         comp = compare_against_heuristic(y_test, scores_test, ofta_arr)
         st.session_state.comparison = comp
-        st.json(comp)
+
+    comp_saved = st.session_state.get("comparison")
+    if comp_saved:
+        tprec = float(comp_saved.get("target_precision", 0.9))
+        cmp_tbl = pd.DataFrame(
+            [
+                {
+                    "Metrica": "ROC-AUC",
+                    "Rede neural": round(float(comp_saved["nn_roc_auc"]), 4),
+                    "Heuristica OFTA": round(float(comp_saved["ofta_roc_auc"]), 4),
+                    "Delta (NN - OFTA)": round(float(comp_saved["delta_roc_auc"]), 4),
+                },
+                {
+                    "Metrica": "PR-AUC",
+                    "Rede neural": round(float(comp_saved["nn_pr_auc"]), 4),
+                    "Heuristica OFTA": round(float(comp_saved["ofta_pr_auc"]), 4),
+                    "Delta (NN - OFTA)": round(float(comp_saved["delta_pr_auc"]), 4),
+                },
+                {
+                    "Metrica": f"Recall @ Precision >= {tprec:.2f}",
+                    "Rede neural": round(float(comp_saved["nn_recall_at_p90"]), 4),
+                    "Heuristica OFTA": round(float(comp_saved["ofta_recall_at_p90"]), 4),
+                    "Delta (NN - OFTA)": round(
+                        float(comp_saved["delta_recall_at_p90"]), 4,
+                    ),
+                },
+            ],
+        )
+        st.dataframe(cmp_tbl, hide_index=True, use_container_width=True)
+        st.caption(
+            f"Criterio do Recall na ultima linha: precision minima **{tprec:.2f}**. "
+            "Delta positivo = NN melhor que OFTA nessa metrica.",
+        )
 
 
 def tab_explainability() -> None:
     st.header("5. Explicabilidade")
+    _render_pipeline_progress()
 
     st.markdown(
         """
@@ -1052,128 +1693,437 @@ Para cada feature, o sistema:
     model = st.session_state.get("model")
     splits = st.session_state.get("splits")
     names = st.session_state.get("feature_names")
-    arch_bagging = st.session_state.get("arch_bagging_members")
+    mlp_members, lr_members = _get_bagging_lists()
     if model is None or splits is None:
-        st.info("Treine o modelo na aba 3.")
+        st.info("Treine o modelo na aba **3. Treino** primeiro.")
         return
 
     X_val, y_val = splits["val"]
-    if arch_bagging:
+    if mlp_members or lr_members:
         st.caption(
-            "Modo bagging 4 arquiteturas: a importancia e calculada sobre o score agregado (media).",
+            f"Importancia calculada sobre o score agregado do bagging "
+            f"hibrido (**{len(mlp_members)} MLPs + {len(lr_members)} "
+            f"regressoes logisticas**, media calibrada Platt por modelo).",
         )
 
     sample_max = min(2000, len(y_val))
-    sample = st.slider("Amostra para permutation importance", 200, sample_max, min(800, sample_max))
+    sample = st.slider(
+        "Amostra para permutation importance",
+        200, sample_max, min(800, sample_max),
+    )
     n_repeats = st.slider("Repetições", 1, 5, 2)
     metric = st.selectbox("Metrica", ["pr_auc", "roc_auc"], index=0)
 
     if st.button("Calcular permutation importance"):
         rng = np.random.default_rng(42)
         idx = rng.choice(len(y_val), size=sample, replace=False)
-        with st.spinner("Calculando importance..."):
-            if arch_bagging:
-                top = permutation_importance_arch_bagging(
-                    arch_bagging,
-                    X_val[idx],
-                    y_val[idx],
-                    names,
-                    metric=metric,
-                    n_repeats=n_repeats,
-                )
-            else:
-                top = permutation_importance(
-                    model, X_val[idx], y_val[idx], names, metric=metric, n_repeats=n_repeats,
-                )
-        st.session_state.importance_top = top
+        try:
+            with StepTimer("explainability"):
+                with st.spinner("Calculando importance..."):
+                    if mlp_members or lr_members:
+                        top = permutation_importance_hybrid(
+                            mlp_members,
+                            lr_members,
+                            X_val[idx],
+                            y_val[idx],
+                            names,
+                            metric=metric,
+                            n_repeats=n_repeats,
+                        )
+                    else:
+                        top = permutation_importance(
+                            model, X_val[idx], y_val[idx], names,
+                            metric=metric, n_repeats=n_repeats,
+                        )
+                st.session_state.importance_top = top
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Permutation importance falhou: %s", exc)
+            st.error(f"Permutation importance falhou: {exc}")
+            return
 
     top = st.session_state.get("importance_top")
     if top is not None:
-        df = pd.DataFrame(top)
-        st.subheader(f"Top 30 features por permutation importance ({metric})")
+        df = pd.DataFrame(attach_descriptions(top))
+        st.subheader(
+            f"Top 30 features por permutation importance ({metric})",
+        )
         st.bar_chart(df.head(30).set_index("feature")["importance"])
-        st.dataframe(df, use_container_width=True)
+        cols_show = [
+            c for c in ("feature", "importance", "descricao") if c in df.columns
+        ]
+        st.dataframe(df[cols_show], use_container_width=True)
 
 
 def tab_manual_test() -> None:
     st.header("6. Teste manual")
+    _render_pipeline_progress()
 
     model = st.session_state.get("model")
     preproc: FeaturePreprocessor | None = st.session_state.get("preprocessor")
     names = st.session_state.get("feature_names")
-    threshold = float(st.session_state.get("threshold_optimal", 0.5))
+    thr = st.session_state.get("threshold_optimal", 0.5)
+    threshold = float(0.5 if thr is None else thr)
 
     if model is None or preproc is None:
-        st.info("Treine o modelo na aba 3.")
+        st.info(
+            "Treine o modelo na aba **3. Treino** antes de usar o teste "
+            "manual.",
+        )
         return
 
-    c1, c2 = st.columns(2)
-    marca_a = c1.text_input("Marca A", value="AGROLOG DISTRIBUIDORA")
-    marca_b = c2.text_input("Marca B", value="AGROLOG")
+    # ---- Picker de pares reais do conjunto de teste ----
+    st.subheader("Selecionar par real da massa de teste")
+    splits = st.session_state.get("splits")
+    df_full = st.session_state.get("df")
+    selected_idx: int | None = None
+    if splits is not None and df_full is not None:
+        idx_test = splits.get("idx_test")
+        if idx_test is not None and len(idx_test) > 0:
+            try:
+                X_test, y_test = splits["test"]
+                mlp_pre, lr_pre = _get_bagging_lists()
+                if mlp_pre or lr_pre:
+                    test_scores_full = predict_hybrid_bagging(
+                        mlp_pre, lr_pre, X_test, apply_calibration=True,
+                    )
+                else:
+                    test_scores_full = predict_scores(model, X_test)
+                pred_lbl = (test_scores_full >= threshold).astype(int)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Falha ao prever scores de teste: %s", exc)
+                test_scores_full = np.full(len(idx_test), np.nan)
+                pred_lbl = np.full(len(idx_test), -1)
 
-    classe_a = c1.number_input("Classe Nice A", -1, 99, 35)
-    classe_b = c2.number_input("Classe Nice B", -1, 99, 39)
+            classes_marca_mon = (
+                df_full.get("classe_marca_monitorada")
+                if "classe_marca_monitorada" in df_full.columns
+                else pd.Series([-1] * len(df_full))
+            )
+            classes_marca_col = (
+                df_full.get("classe_marca_colidente")
+                if "classe_marca_colidente" in df_full.columns
+                else pd.Series([-1] * len(df_full))
+            )
 
-    spec_a = c1.text_area("Especificacao A", value="Comércio de medicamentos.")
-    spec_b = c2.text_area(
-        "Especificacao B",
-        value="Afretamento;Armazenagem;Frete;Servicos de transporte.",
-    )
+            picker_rows = []
+            for k, row_idx in enumerate(idx_test):
+                row = df_full.iloc[int(row_idx)]
+                ma = str(row.get("marca_monitorada", ""))
+                mb = str(row.get("marca_colidente", ""))
+                ca = int(classes_marca_mon.iloc[int(row_idx)])
+                cb = int(classes_marca_col.iloc[int(row_idx)])
+                yreal = int(row.get(LABEL_COLUMN_CANON, 0))
+                score = float(test_scores_full[k]) if k < len(test_scores_full) else float("nan")
+                yp = int(pred_lbl[k]) if k < len(pred_lbl) else -1
+                if score == score:
+                    cat = "TP" if (yreal == 1 and yp == 1) else (
+                        "FN" if (yreal == 1 and yp == 0) else (
+                            "FP" if (yreal == 0 and yp == 1) else "TN"
+                        )
+                    )
+                    label = (
+                        f"{cat} | score={score:.3f} | y={yreal} | "
+                        f"{ma} (cl {ca}) X {mb} (cl {cb})"
+                    )
+                else:
+                    label = f"y={yreal} | {ma} (cl {ca}) X {mb} (cl {cb})"
+                picker_rows.append(
+                    {"k": k, "row_idx": int(row_idx), "label": label}
+                )
 
-    if st.button("Calcular score", type="primary"):
-        df_pair = pd.DataFrame(
-            {
-                "marca_monitorada": [marca_a],
-                "marca_colidente": [marca_b],
-                "classe_marca_monitorada": [int(classe_a)],
-                "classe_marca_colidente": [int(classe_b)],
-                "especificacao_monitorado": [spec_a],
-                "especificacao_colidente": [spec_b],
-            }
-        )
-        X_pair = preproc.transform(df_pair, scale=True)
-        ensemble_members = st.session_state.get("ensemble_members")
-        arch_bagging = st.session_state.get("arch_bagging_members")
-        calibrator = st.session_state.get("calibrator")
-        if arch_bagging:
-            comp = predict_architecture_bagging_components(
-                arch_bagging, X_pair, apply_calibration=True,
-            )[0]
-            nn_score = float(comp.mean())
-            by_arch = {m.key: float(comp[j]) for j, m in enumerate(arch_bagging)}
-        elif ensemble_members:
-            nn_score = float(predict_ensemble(
-                ensemble_members, X_pair, apply_calibration=True,
-            )[0])
-            by_arch = None
-        else:
-            nn_score = float(predict_scores(model, X_pair)[0])
-            if calibrator is not None and calibrator.fitted:
-                nn_score = float(calibrator.transform(np.array([nn_score]))[0])
-            by_arch = None
-        ofta = calcular_score_complexo(marca_a, marca_b)
+            cat_filter = st.selectbox(
+                "Filtrar por categoria",
+                options=["Todos", "TP", "FN", "FP", "TN"],
+                index=0,
+                help=(
+                    "TP/FN/FP/TN avaliados pelo bagging atual com o "
+                    "threshold otimo de validacao."
+                ),
+            )
+            if cat_filter != "Todos":
+                picker_rows = [
+                    r for r in picker_rows
+                    if r["label"].startswith(cat_filter + " ")
+                ]
+            picker_rows = picker_rows[:1500]
 
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Score NN (0-1)", f"{nn_score:.4f}")
-        c2.metric("Score heuristica OFTA (0-1)", f"{ofta['final']:.4f}", delta=f"driver: {ofta.get('driver','')}")
-        c3.metric("Classe prevista", int(nn_score >= threshold), delta=f"thr={threshold:.2f}")
-        if by_arch:
-            st.caption("Scores por arquitetura (calibrados): " + ", ".join(f"{k}={v:.4f}" for k, v in by_arch.items()))
-
-        with st.spinner("Calculando contribuicoes (Integrated Gradients)..."):
-            if arch_bagging:
-                attrib = integrated_gradients_arch_bagging_row(
-                    arch_bagging, X_pair[0], names,
+            if not picker_rows:
+                st.caption(
+                    "Nenhum par disponivel para esse filtro.",
                 )
             else:
-                attrib = integrated_gradients_for_row(model, X_pair[0], names)
-        st.subheader("Top 10 features que mais influenciaram este score")
-        df_attr = pd.DataFrame(attrib).head(10)
-        st.dataframe(df_attr, use_container_width=True)
+                opt_labels = [r["label"] for r in picker_rows]
+                pick = st.selectbox(
+                    f"Pares reais ({len(opt_labels)}):",
+                    options=opt_labels,
+                    index=0,
+                )
+                if pick:
+                    chosen = next(
+                        r for r in picker_rows if r["label"] == pick
+                    )
+                    selected_idx = int(chosen["row_idx"])
+                    if st.button(
+                        "Carregar este par nos campos abaixo",
+                    ):
+                        row = df_full.iloc[selected_idx]
+                        st.session_state.manual_marca_a = str(
+                            row.get("marca_monitorada", ""),
+                        )
+                        st.session_state.manual_marca_b = str(
+                            row.get("marca_colidente", ""),
+                        )
+                        st.session_state.manual_classe_a = int(
+                            classes_marca_mon.iloc[selected_idx],
+                        )
+                        st.session_state.manual_classe_b = int(
+                            classes_marca_col.iloc[selected_idx],
+                        )
+                        st.session_state.manual_spec_a = str(
+                            row.get("especificacao_monitorado", ""),
+                        )
+                        st.session_state.manual_spec_b = str(
+                            row.get("especificacao_colidente", ""),
+                        )
+                        st.success(
+                            "Par carregado nos campos. Clique em "
+                            "**Calcular score**.",
+                        )
+        else:
+            st.caption(
+                "Indices do conjunto de teste indisponiveis. Re-treine o "
+                "modelo para habilitar a selecao automatica.",
+            )
+    else:
+        st.caption(
+            "Conjunto de teste indisponivel. Treine o modelo para "
+            "habilitar a selecao de pares reais.",
+        )
+
+    st.divider()
+
+    c1, c2 = st.columns(2)
+    marca_a = c1.text_input(
+        "Marca A",
+        value=st.session_state.get("manual_marca_a", "AGROLOG DISTRIBUIDORA"),
+        key="manual_marca_a",
+    )
+    marca_b = c2.text_input(
+        "Marca B",
+        value=st.session_state.get("manual_marca_b", "AGROLOG"),
+        key="manual_marca_b",
+    )
+
+    classe_a = c1.number_input(
+        "Classe Nice A", -1, 99,
+        int(st.session_state.get("manual_classe_a", 35)),
+        key="manual_classe_a",
+    )
+    classe_b = c2.number_input(
+        "Classe Nice B", -1, 99,
+        int(st.session_state.get("manual_classe_b", 39)),
+        key="manual_classe_b",
+    )
+
+    spec_a = c1.text_area(
+        "Especificacao A",
+        value=st.session_state.get(
+            "manual_spec_a", "Comercio de medicamentos.",
+        ),
+        key="manual_spec_a",
+    )
+    spec_b = c2.text_area(
+        "Especificacao B",
+        value=st.session_state.get(
+            "manual_spec_b",
+            "Afretamento;Armazenagem;Frete;Servicos de transporte.",
+        ),
+        key="manual_spec_b",
+    )
+
+    calc_col, phase_col = st.columns([2, 1])
+    with phase_col:
+        st.caption("**Fases do calculo** (atualiza ao clicar em Calcular score)")
+        manual_phase_box = st.empty()
+
+    with calc_col:
+        trigger_calc = st.button("Calcular score", type="primary")
+
+    if trigger_calc:
+        manual_phase_box.info(
+            "**Aguardando inicio** — botao acionado; iniciando pipeline...",
+        )
+        try:
+            with StepTimer("manual_test"):
+                with st.status(
+                    "**Calculo do score em andamento** — veja as fases:",
+                    expanded=True,
+                ) as calc_stat:
+                    calc_stat.markdown(
+                        "**Fase 1/4 — Features:** montando linha do par e "
+                        "`preprocessor.transform` (TF-IDF, embeddings, scaler)...",
+                    )
+                    manual_phase_box.info(
+                        "**Fase 1/4** — Vetor de features (transformador ja "
+                        "ajustado no enriquecimento).",
+                    )
+                    df_pair = pd.DataFrame({
+                        "marca_monitorada": [marca_a],
+                        "marca_colidente": [marca_b],
+                        "classe_marca_monitorada": [int(classe_a)],
+                        "classe_marca_colidente": [int(classe_b)],
+                        "especificacao_monitorado": [spec_a],
+                        "especificacao_colidente": [spec_b],
+                    })
+                    X_pair = preproc.transform(df_pair, scale=True)
+                    ensemble_members = st.session_state.get(
+                        "ensemble_members",
+                    )
+                    mlp_members, lr_members = _get_bagging_lists()
+                    calibrator = st.session_state.get("calibrator")
+
+                    calc_stat.markdown(
+                        f"**Fase 2/4 — Bagging hibrido:** {len(mlp_members)} "
+                        f"MLPs + {len(lr_members)} regressoes logisticas "
+                        "(forward + Platt + media)...",
+                    )
+                    manual_phase_box.info(
+                        "**Fase 2/4** — Forward MLPs + LogRegs + calibracao Platt.",
+                    )
+                    by_arch_rows: list[dict[str, Any]] | None = None
+                    if mlp_members or lr_members:
+                        comp_mat, comp_info = predict_hybrid_bagging_components(
+                            mlp_members, lr_members, X_pair,
+                            apply_calibration=True,
+                        )
+                        comp_row = comp_mat[0]
+                        nn_score = float(comp_row.mean())
+                        by_arch_rows = [
+                            {
+                                "tipo": info["kind"],
+                                "chave": info["key"],
+                                "score": float(comp_row[j]),
+                            }
+                            for j, info in enumerate(comp_info)
+                        ]
+                    elif ensemble_members:
+                        nn_score = float(predict_ensemble(
+                            ensemble_members, X_pair, apply_calibration=True,
+                        )[0])
+                    else:
+                        nn_score = float(predict_scores(model, X_pair)[0])
+                        if calibrator is not None and calibrator.fitted:
+                            nn_score = float(
+                                calibrator.transform(np.array([nn_score]))[0]
+                            )
+
+                    calc_stat.markdown(
+                        "**Fase 3/4 — Heuristica OFTA:** score legado para "
+                        "comparacao lado a lado...",
+                    )
+                    manual_phase_box.info(
+                        "**Fase 3/4** — OFTA (regra de negocio historica).",
+                    )
+                    ofta = calcular_score_complexo(marca_a, marca_b)
+
+                    calc_stat.markdown(
+                        "**Fase 4/4 — Explicabilidade:** Integrated Gradients "
+                        "(contribuicao por feature neste par)...",
+                    )
+                    manual_phase_box.info(
+                        "**Fase 4/4** — Integrated Gradients (GPU se disponivel; "
+                        "MLPs via captum, logisticas via contribuicao linear analitica).",
+                    )
+                    if mlp_members or lr_members:
+                        attrib = integrated_gradients_hybrid_row(
+                            mlp_members, lr_members, X_pair[0], names,
+                        )
+                    else:
+                        attrib = integrated_gradients_for_row(
+                            model, X_pair[0], names,
+                        )
+                    calc_stat.update(
+                        label="**Concluido** — todas as fases terminaram.",
+                        state="complete",
+                    )
+                    manual_phase_box.success(
+                        "**Concluido** — score e IG disponiveis abaixo.",
+                    )
+
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Score NN (0-1)", f"{nn_score:.4f}")
+                c2.metric(
+                    "Score heuristica OFTA (0-1)",
+                    f"{ofta['final']:.4f}",
+                    delta=f"driver: {ofta.get('driver','')}",
+                )
+                c3.metric(
+                    "Classe prevista",
+                    int(nn_score >= threshold),
+                    delta=f"thr={threshold:.2f}",
+                )
+                if by_arch_rows:
+                    n_total = len(by_arch_rows)
+                    n_mlp_models = sum(
+                        1 for r in by_arch_rows if r["tipo"] == "mlp"
+                    )
+                    n_lr_models = sum(
+                        1 for r in by_arch_rows if r["tipo"] == "logreg"
+                    )
+                    scores_only = [r["score"] for r in by_arch_rows]
+                    if n_total <= 8:
+                        st.caption(
+                            "Scores por modelo do bagging (calibrados): "
+                            + ", ".join(
+                                f"{r['tipo']}/{r['chave']}={r['score']:.4f}"
+                                for r in by_arch_rows
+                            )
+                        )
+                    else:
+                        st.caption(
+                            f"Bagging com {n_total} modelos "
+                            f"({n_mlp_models} MLPs + {n_lr_models} "
+                            f"logisticas). Score agregado={nn_score:.4f}, "
+                            f"min={min(scores_only):.4f}, "
+                            f"max={max(scores_only):.4f}."
+                        )
+                        st.dataframe(
+                            pd.DataFrame(by_arch_rows),
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+
+                st.subheader(
+                    "Top 10 features que mais influenciaram este score",
+                )
+                df_attr = pd.DataFrame(
+                    attach_descriptions(attrib),
+                ).head(10)
+                cols_show = [
+                    c for c in ("feature", "attribution", "descricao")
+                    if c in df_attr.columns
+                ]
+                st.dataframe(df_attr[cols_show], use_container_width=True)
+        except Exception as exc:  # noqa: BLE001
+            manual_phase_box.error(f"**Erro:** {exc}")
+            logger.exception("Teste manual falhou: %s", exc)
+            st.error(f"Teste manual falhou: {exc}")
 
 
 def tab_artifacts() -> None:
     st.header("7. Artefatos finais")
+    _render_pipeline_progress()
+
+    st.markdown(
+        """
+Cada **treino concluido** grava automaticamente um pacote em `pipelines/<data_hora_uid>/`
+com subpastas **enriched**, **weights**, **config**, **reports** e **errors**, e
+atualiza o espelho em `artifacts/` para compatibilidade com scripts antigos.
+
+Use o botao abaixo para **re-exportar** o mesmo pipeline (por exemplo apos calcular
+permutation importance na aba 5).
+        """
+    )
 
     df = st.session_state.get("df")
     df_report: DatasetReport | None = st.session_state.get("df_report")
@@ -1186,17 +2136,27 @@ def tab_artifacts() -> None:
     threshold_opt = float(st.session_state.get("threshold_optimal", 0.5))
     threshold_policy = st.session_state.get("threshold_policy", {})
     train_result = st.session_state.get("train_result")
-    importance_top = st.session_state.get("importance_top")
     ensemble_members: list[EnsembleMember] | None = st.session_state.get("ensemble_members")
     arch_bagging_members = st.session_state.get("arch_bagging_members")
+    logreg_bagging_members = st.session_state.get("logreg_bagging_members")
     calibrator: PlattCalibrator | None = st.session_state.get("calibrator")
 
     if not all([df is not None, preproc is not None, X is not None, model is not None, em_test is not None]):
         st.info("Conclua treino e avaliacao antes de exportar artefatos.")
         return
 
-    out_dir = PROJECT_ROOT / "artifacts"
-    out_dir.mkdir(exist_ok=True)
+    pr = st.session_state.get("pipeline_run_dir")
+    if pr:
+        st.success(f"**Pipeline ativo:** `{pr}`")
+        try:
+            st.caption(f"Relativo ao projeto: `{Path(pr).relative_to(PROJECT_ROOT)}`")
+        except ValueError:
+            st.caption(str(pr))
+    else:
+        st.warning(
+            "Ainda nao houve treino com gravacao automatica nesta sessao. "
+            "Conclua o treino na aba 3 ou use o botao abaixo para criar uma nova pasta.",
+        )
 
     auto_imp = st.checkbox(
         "Calcular permutation importance automaticamente se ausente",
@@ -1204,231 +2164,82 @@ def tab_artifacts() -> None:
         help="Garante que o relatorio nunca saia sem a secao 11. Usa amostra de 600 e 2 repeticoes.",
     )
 
-    if st.button("Gerar e salvar todos os artefatos", type="primary"):
-        def _predict_full(_X: np.ndarray) -> np.ndarray:
-            if arch_bagging_members:
-                return predict_architecture_bagging(
-                    arch_bagging_members, _X, apply_calibration=True,
-                )
-            if ensemble_members:
-                return predict_ensemble(
-                    ensemble_members, _X,
-                    apply_calibration=bool(calibrator is not None or any(
-                        m.calibrator.fitted for m in ensemble_members
-                    )),
-                )
-            s = predict_scores(model, _X)
-            if calibrator is not None and calibrator.fitted:
-                s = calibrator.transform(s)
-            return s
+    train_cfg: TrainConfig = st.session_state.get(
+        "train_cfg", TrainConfig(epochs=max(1, len(st.session_state.history)))
+    )
 
-        with st.spinner("Calculando scores no dataset completo..."):
-            score_nn_full = _predict_full(X)
-            score_h_full = np.array(
-                [
-                    calcular_similaridade_ofta(a, b)
-                    for a, b in zip(df["marca_monitorada"].astype(str), df["marca_colidente"].astype(str))
-                ],
-                dtype=np.float32,
+    if st.button("Re-exportar artefatos (atualiza pipeline ativo)", type="primary"):
+        if pr and Path(pr).exists():
+            dirs = dirs_from_root(Path(pr))
+        else:
+            rid = new_pipeline_run_id()
+            dirs = prepare_run_directories(PROJECT_ROOT, rid)
+            st.session_state.pipeline_run_id = rid
+            st.session_state.pipeline_run_dir = str(dirs["root"])
+        prog_enr = st.progress(0, text="A exportar pipeline...")
+        try:
+            imp, meta = export_pipeline_bundle(
+                project_root=PROJECT_ROOT,
+                dirs=dirs,
+                df=df,
+                X=X,
+                names=list(names or []),
+                splits=splits,
+                model=model,
+                preproc=preproc,
+                train_cfg=train_cfg,
+                train_result=train_result,
+                threshold_opt=threshold_opt,
+                threshold_policy=threshold_policy,
+                df_report=df_report,
+                history=list(st.session_state.history) if st.session_state.history else None,
+                ensemble_members=ensemble_members,
+                arch_bagging_members=arch_bagging_members,
+                logreg_bagging_members=logreg_bagging_members,
+                calibrator=calibrator,
+                importance_top=st.session_state.get("importance_top"),
+                auto_imp=auto_imp,
+                progress_callback_enriched=lambda p, m: prog_enr.progress(
+                    min(1.0, max(0.0, float(p))), text=str(m)[:95],
+                ),
             )
-        st.session_state.score_nn_full = score_nn_full
-        st.session_state.score_heuristic_full = score_h_full
-
-        preproc.save(out_dir / "preprocessor.pkl")
-        save_state_dict(model.state_dict(), out_dir / "model.pt")
-
-        if calibrator is not None and calibrator.fitted:
-            calibrator.save(out_dir / "calibrator.json")
-
-        if ensemble_members:
-            save_ensemble(ensemble_members, out_dir / "ensemble")
-        if arch_bagging_members:
-            save_architecture_bagging(arch_bagging_members, out_dir / "ensemble_arch_bagging")
-
-        X_train, y_train = splits["train"]
-        X_val, y_val = splits["val"]
-        X_test, y_test = splits["test"]
-        scores_train = _predict_full(X_train)
-        scores_val = _predict_full(X_val)
-        scores_test = _predict_full(X_test)
-        em_train = compute_metrics_at_threshold(y_train, scores_train, threshold_opt)
-        em_val = compute_metrics_at_threshold(y_val, scores_val, threshold_opt)
-        em_test_re = compute_metrics_at_threshold(y_test, scores_test, threshold_opt)
-
-        bal: BalancingConfig = splits["bal"]
-        split_cfg: SplitConfig = splits["split_cfg"]
-        train_cfg: TrainConfig = st.session_state.get(
-            "train_cfg", TrainConfig(epochs=max(1, len(st.session_state.history)))
-        )
-
-        arch_cfg = (
-            model.config if hasattr(model, "config") else (
-                model.cfg if hasattr(model, "cfg") else MLPConfig(input_dim=X.shape[1])
+            prog_enr.progress(1.0, text="Exportacao concluida.")
+            if imp is not None:
+                st.session_state.importance_top = imp
+            rid = dirs["root"].name
+            append_registry(PROJECT_ROOT, {"id": rid, **meta})
+            mirror_latest_to_artifacts(PROJECT_ROOT, dirs)
+            st.session_state.pipeline_run_dir = str(dirs["root"])
+            st.session_state.pipeline_run_id = rid
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Falha na exportacao: {exc}")
+            logger.exception("tab_artifacts export")
+        else:
+            report_path = dirs["reports"] / "report.md"
+            prev = ""
+            if report_path.exists():
+                prev = report_path.read_text(encoding="utf-8")
+            st.success(
+                f"Artefatos atualizados em `{dirs['root']}` e espelho em `artifacts/`. "
+                f"Registo em `pipelines/_registry.json`.",
             )
-        )
-        cfg_dict = build_model_config_dict(
-            mlp_config=arch_cfg,
-            preprocessor=preproc,
-            train_config=train_cfg,
-            balancing=bal,
-            split_config=split_cfg,
-            threshold_optimal=threshold_opt,
-            threshold_policy=threshold_policy,
-            metrics_train=em_train,
-            metrics_val=em_val,
-            metrics_test=em_test_re,
-            train_result=train_result,
-            dataset_report=df_report,
-            state_dict=model.state_dict(),
-            embedding_used=preproc.config.use_embeddings,
-        )
-        if arch_bagging_members:
-            cfg_dict["architecture_bagging"] = {
-                "enabled": True,
-                "aggregation": "mean",
-                "members": [m.key for m in arch_bagging_members],
-                "artifact_dir": "ensemble_arch_bagging",
-            }
-        save_model_config(cfg_dict, out_dir / "brand_similarity_model_config.json")
+            if prev:
+                with st.expander("Previa do relatorio gerado", expanded=False):
+                    st.markdown(prev)
 
-        save_enriched_dataframe(
-            df_original=df,
-            feature_matrix=X,
-            feature_names=names,
-            score_nn=score_nn_full,
-            score_heuristic=score_h_full,
-            threshold=threshold_opt,
-            out_xlsx=out_dir / "brand_similarity_input_view_enriched.xlsx",
-            out_parquet=out_dir / "enriched.parquet",
-            label_col=LABEL_COLUMN_CANON,
-        )
-
-        comp = compare_against_heuristic(y_test, scores_test, score_h_full[: len(y_test)])
-
-        if importance_top is None and auto_imp:
-            with st.spinner("Calculando permutation importance (amostra 600, 2 repeticoes)..."):
-                rng = np.random.default_rng(42)
-                sample_n = min(600, len(y_val))
-                idx = rng.choice(len(y_val), size=sample_n, replace=False)
-                if arch_bagging_members:
-                    importance_top = permutation_importance_arch_bagging(
-                        arch_bagging_members,
-                        X_val[idx],
-                        y_val[idx],
-                        names,
-                        metric="pr_auc",
-                        n_repeats=2,
-                    )
-                else:
-                    importance_top = permutation_importance(
-                        model, X_val[idx], y_val[idx], names, metric="pr_auc", n_repeats=2,
-                    )
-                st.session_state.importance_top = importance_top
-
-        with st.spinner("Coletando estatisticas detalhadas para o relatorio..."):
-            score_stats = score_distribution_stats(y_test, scores_test)
-            score_deciles = score_decile_table(y_test, scores_test)
-
-            idx_test_real = splits.get("idx_test")
-            if idx_test_real is not None:
-                df_test_aligned = df.iloc[idx_test_real].copy().reset_index(drop=True)
-            else:
-                df_test_aligned = df.iloc[: len(y_test)].copy().reset_index(drop=True)
-            errors_dict = top_errors(df_test_aligned, y_test, scores_test, threshold_opt, k=10)
-            all_errors = all_errors_separated(
-                df_test_aligned, y_test, scores_test, threshold_opt, keep_specs=False,
-            )
-
-            fp_csv = out_dir / "falsos_positivos_grupo_0.csv"
-            fn_csv = out_dir / "falsos_negativos_grupo_1.csv"
-            all_errors["fp_full_df"].to_csv(fp_csv, index=False, encoding="utf-8-sig")
-            all_errors["fn_full_df"].to_csv(fn_csv, index=False, encoding="utf-8-sig")
-            error_csv_paths = {
-                "fp_csv": str(fp_csv.relative_to(PROJECT_ROOT)),
-                "fn_csv": str(fn_csv.relative_to(PROJECT_ROOT)),
-            }
-
-            feat_stats = feature_summary_stats(X, names, top_k=20)
-            feat_corr = features_correlation_with_label(
-                X, df[LABEL_COLUMN_CANON].to_numpy().astype(np.float32), names, top_k=20,
-            )
-
-            preproc_summary = {
-                "config": preproc.config.to_dict(),
-                "top_classes": list(preproc.top_classes),
-            }
-
-            deltas = {
-                "ROC-AUC train-test": em_train.roc_auc - em_test_re.roc_auc,
-                "PR-AUC train-test": em_train.pr_auc - em_test_re.pr_auc,
-                "Recall train-test": em_train.recall - em_test_re.recall,
-                "F1 train-test": em_train.f1 - em_test_re.f1,
-            }
-
-            train_cfg_dict = train_cfg.to_dict() if hasattr(train_cfg, "to_dict") else dict(train_cfg.__dict__)
-            if train_result is not None:
-                train_cfg_dict.update(
-                    best_epoch=train_result.best_epoch,
-                    best_pr_auc_val=train_result.best_pr_auc_val,
-                    n_train_after_balancing=train_result.n_train_after_balancing,
-                )
-
-        report_md = build_report(
-            feature_names=names,
-            balancing=bal,
-            pos_weight_used=float(getattr(train_result, "pos_weight_used", 1.0)) if train_result else 1.0,
-            split_config=split_cfg,
-            metrics_train=em_train,
-            metrics_val=em_val,
-            metrics_test=em_test_re,
-            comparison=comp,
-            threshold_optimal=threshold_opt,
-            threshold_policy=threshold_policy,
-            dataset_report=df_report,
-            importance_top=importance_top,
-            mlp_config=arch_cfg.to_dict() if hasattr(arch_cfg, "to_dict") else dict(arch_cfg.__dict__),
-            train_config=train_cfg_dict,
-            history=list(st.session_state.history) if st.session_state.history else None,
-            preprocessing_summary=preproc_summary,
-            feature_stats=feat_stats,
-            feature_corr_with_label=feat_corr,
-            score_stats_test=score_stats,
-            score_deciles_test=score_deciles,
-            errors_test=errors_dict,
-            all_errors_test=all_errors,
-            deltas_train_val_test=deltas,
-            error_csv_paths=error_csv_paths,
-        )
-        save_report(report_md, out_dir / "report.md")
-
-        st.success(
-            f"Artefatos salvos em {out_dir}. "
-            f"Lista completa de erros: {len(all_errors['grupo_0_errados'])} FPs (Grupo 0) "
-            f"e {len(all_errors['grupo_1_errados'])} FNs (Grupo 1) tambem em CSV."
-        )
-        with st.expander("Previa do relatorio gerado", expanded=False):
-            st.markdown(report_md)
-
-    files = [
-        out_dir / "brand_similarity_model_config.json",
-        out_dir / "model.pt",
-        out_dir / "preprocessor.pkl",
-        out_dir / "calibrator.json",
-        out_dir / "enriched.parquet",
-        out_dir / "brand_similarity_input_view_enriched.xlsx",
-        out_dir / "report.md",
-        out_dir / "falsos_positivos_grupo_0.csv",
-        out_dir / "falsos_negativos_grupo_1.csv",
-        out_dir / "ensemble_arch_bagging" / "index.json",
-    ]
-    for fp in files:
-        if fp.exists():
+    pr2 = st.session_state.get("pipeline_run_dir")
+    if pr2 and Path(pr2).exists():
+        st.subheader("Downloads (pipeline ativo)")
+        dirs_dl = dirs_from_root(Path(pr2))
+        for fp in collect_download_files(dirs_dl):
+            rel = fp.relative_to(dirs_dl["root"])
             mb = fp.stat().st_size / (1024 * 1024)
             with fp.open("rb") as f:
                 st.download_button(
-                    label=f"Download {fp.name}  ({mb:.2f} MB)",
+                    label=f"Download {rel.as_posix()} ({mb:.2f} MB)",
                     data=f.read(),
-                    file_name=fp.name,
+                    file_name=str(rel).replace("\\", "_").replace("/", "_"),
+                    key=f"dl_{fp.as_posix()}",
                 )
 
 
@@ -1437,13 +2248,17 @@ def tab_artifacts() -> None:
 # ---------------------------------------------------------------------------
 def main() -> None:
     st.title("Brandious SuperMatching")
-    st.caption("Pipeline de similaridade aprendida de marcas (PT-BR) - Streamlit substitui o app Flask antigo.")
+    st.caption(
+        "Pipeline de similaridade aprendida de marcas (PT-BR). Execute as "
+        "abas em sequencia (1 -> 7); o treino na aba 3 grava artefatos "
+        "automaticamente.",
+    )
 
     cfg = render_sidebar()
 
     tabs = st.tabs(TABS)
     with tabs[0]:
-        tab_upload_eda()
+        tab_upload_eda(cfg)
     with tabs[1]:
         tab_enrichment(cfg)
     with tabs[2]:

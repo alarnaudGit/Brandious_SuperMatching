@@ -22,6 +22,8 @@ import numpy as np
 import pandas as pd
 
 from .data import DatasetReport
+from .feature_importance_export import feature_block_for_pruning
+from .features.feature_dictionary import attach_descriptions
 from .model.dataset import BalancingConfig, SplitConfig
 from .model.evaluate import EvalMetrics, recall_at_precision
 
@@ -618,8 +620,19 @@ def build_report(
     # ------------------------------------------------------------------ 4. Balanceamento + Split
     lines.append("## 4. Estrategia de balanceamento")
     lines.append("")
-    lines.append(f"- Undersample negativos: ratio **{balancing.undersample_neg_ratio:.2f} : 1** (neg/pos alvo)")
-    lines.append(f"- Oversample positivos: fator **{balancing.oversample_pos_factor:.2f}x**")
+    _tb = getattr(balancing, "training_balance", "equal")
+    if _tb == "equal":
+        lines.append(
+            "- **Modo treino: 50/50** — positivos (classe 1) reamostrados *com reposicao* ate o numero de "
+            "negativos apos undersample (cada batch ve as duas classes com igual cardinalidade).",
+        )
+        lines.append(
+            f"- Undersample negativos: no maximo **{balancing.undersample_neg_ratio:.2f}** negativos por "
+            "positivo *original* antes de igualar contagens.",
+        )
+    else:
+        lines.append(f"- Modo **legado**: undersample neg/pos alvo ratio **{balancing.undersample_neg_ratio:.2f} : 1**")
+        lines.append(f"- Oversample positivos: fator **{balancing.oversample_pos_factor:.2f}x**")
     lines.append(f"- Class weight (pos_weight) ativo: **{balancing.use_class_weight}**, "
                  f"valor efetivo **{pos_weight_used:.3f}**")
     lines.append(f"- Seed: {balancing.seed}")
@@ -831,39 +844,29 @@ def build_report(
         lines.append("")
         lines.append("### 11.1 Top 30 globais")
         lines.append("")
+        lines.append(
+            "_Lista completa e agregados por bloco para poda da visao enriquecida: "
+            "`reports/feature_importance_permutation_full.csv`, "
+            "`reports/feature_importance_by_block.json`, "
+            "`reports/GUIA_PODA_FEATURES_ENRIQUECIDAS.md` (espelhados em `artifacts/`)._"
+        )
+        lines.append("")
         lines.append(_md_table(
-            list(importance_top[:30]),
-            ["feature", "importance"],
-            {"feature": "Feature", "importance": "Importance"},
+            attach_descriptions(list(importance_top[:30])),
+            ["feature", "importance", "descricao"],
+            {
+                "feature": "Feature",
+                "importance": "Importance",
+                "descricao": "Descricao",
+            },
         ))
 
-        # Resumo por bloco
+        # Resumo por bloco (alinhado a `feature_importance_by_block.json` / CSV de poda)
         block_sums: dict[str, float] = {}
         for row in importance_top:
-            name = row["feature"]
-            imp = row["importance"]
-            if name.startswith("graf_"):
-                k = "Graficas"
-            elif name.startswith("fon_"):
-                k = "Foneticas"
-            elif name.startswith("ofta_"):
-                k = "OFTA"
-            elif name.startswith("num_"):
-                k = "Numerais"
-            elif name.startswith("spec_cosine_"):
-                k = "Spec_cosine"
-            elif name.startswith("spec_lex_"):
-                k = "Spec_lex"
-            elif name.startswith("spec_"):
-                k = "Spec_atividade"
-            elif name.startswith("cls_"):
-                k = "Classe Nice"
-            elif name.startswith("inter_"):
-                k = "Interacoes"
-            elif name.startswith("tok_") or name.startswith("n_tokens"):
-                k = "Tokens"
-            else:
-                k = "Outras"
+            name = str(row["feature"])
+            imp = float(row["importance"])
+            k = feature_block_for_pruning(name)
             block_sums[k] = block_sums.get(k, 0.0) + max(0.0, imp)
         if block_sums:
             total = sum(block_sums.values()) or 1.0

@@ -50,9 +50,26 @@ class EvalMetrics:
         }
 
 
+def default_device() -> str:
+    """Escolhe 'cuda' se dispon\u00edvel, sen\u00e3o 'cpu'."""
+    try:
+        if torch.cuda.is_available():
+            return "cuda"
+    except Exception:
+        pass
+    return "cpu"
+
+
 @torch.no_grad()
-def predict_scores(model: BrandSimilarityMLP, X: np.ndarray, batch_size: int = 1024, device: str = "cpu") -> np.ndarray:
-    """Devolve scores 0-1 (sigmoid dos logits)."""
+def predict_scores(
+    model: BrandSimilarityMLP,
+    X: np.ndarray,
+    batch_size: int = 1024,
+    device: str | None = None,
+) -> np.ndarray:
+    """Devolve scores 0-1 (sigmoid dos logits). Usa GPU por defeito quando dispon\u00edvel."""
+    if device is None:
+        device = default_device()
     model.eval()
     model.to(device)
     n = X.shape[0]

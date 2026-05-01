@@ -13,12 +13,23 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Callable, Iterable, Sequence
 
 import numpy as np
 from unidecode import unidecode
 
 logger = logging.getLogger(__name__)
+
+def _preferred_device() -> str:
+    """Escolhe device para SentenceTransformer (GPU se disponível)."""
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return "cuda"
+    except Exception:
+        pass
+    return "cpu"
 
 
 # ---------------------------------------------------------------------------
@@ -138,8 +149,36 @@ class EmbeddingProvider:
             from sentence_transformers import SentenceTransformer
 
             logger.info("Carregando modelo de embeddings %s ...", self.model_name)
-            self._model = SentenceTransformer(self.model_name)
+            device = _preferred_device()
+            logger.info("SentenceTransformer device: %s", device)
+            self._model = SentenceTransformer(self.model_name, device=device)
         return self._model
+
+    def _embedding_dim(self) -> int:
+        m = self._ensure_model()
+        ed = getattr(m, "get_embedding_dimension", None)
+        if callable(ed):
+            return int(ed())
+        d = getattr(m, "get_sentence_embedding_dimension", None)
+        if callable(d):
+            return int(d())
+        raise RuntimeError("Modelo de embeddings sem metodo de dimensao conhecido.")
+
+    def _purge_cache_wrong_dim(self, expected_dim: int) -> int:
+        """Remove vetores de outro modelo (ex.: 384 vs 1024 ao mudar BERTimbau)."""
+        stale = [
+            k for k, v in self._cache.items()
+            if getattr(v, "shape", (0,))[0] != expected_dim
+        ]
+        for k in stale:
+            del self._cache[k]
+        if stale:
+            logger.warning(
+                "Cache embeddings (specs): removidas %d entradas com dim != %d.",
+                len(stale),
+                expected_dim,
+            )
+        return len(stale)
 
     def _load_cache(self) -> None:
         if self.cache_path and self.cache_path.exists():
@@ -168,32 +207,59 @@ class EmbeddingProvider:
         except Exception as exc:
             logger.warning("Falha ao salvar cache: %s", exc)
 
-    def encode(self, texts: Sequence[str]) -> np.ndarray:
-        """Devolve embeddings normalizados (norm L2) shape (N, D)."""
+    def encode(
+        self,
+        texts: Sequence[str],
+        *,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> np.ndarray:
+        """Devolve embeddings normalizados (norm L2) shape (N, D).
+
+        `progress(done, total)` e chamado ao longo do calculo de textos em falta
+        (util para Streamlit nao ficar parado na barra durante modelos grandes em CPU).
+        """
+        d = self._embedding_dim()
         if not texts:
-            return np.zeros((0, 384), dtype=np.float32)
+            return np.zeros((0, d), dtype=np.float32)
+
+        self._purge_cache_wrong_dim(d)
 
         missing_idx: list[int] = []
         missing_txt: list[str] = []
         for i, t in enumerate(texts):
-            if t not in self._cache:
+            vec = self._cache.get(t)
+            if vec is None or vec.shape[0] != d:
+                if vec is not None:
+                    del self._cache[t]
                 missing_idx.append(i)
                 missing_txt.append(t)
 
         if missing_txt:
             model = self._ensure_model()
-            embs = model.encode(
-                missing_txt,
-                batch_size=self.batch_size,
-                normalize_embeddings=True,
-                show_progress_bar=False,
-                convert_to_numpy=True,
-            ).astype(np.float32)
-            for t, e in zip(missing_txt, embs):
-                self._cache[t] = e
+            n_m = len(missing_txt)
+            # Chunks maiores que batch_size interno: cada chunk gera um callback (UI).
+            outer_step = max(128, self.batch_size * 2)
+            for start in range(0, n_m, outer_step):
+                chunk = missing_txt[start : start + outer_step]
+                embs = model.encode(
+                    chunk,
+                    batch_size=self.batch_size,
+                    normalize_embeddings=True,
+                    show_progress_bar=False,
+                    convert_to_numpy=True,
+                ).astype(np.float32)
+                for t, e in zip(chunk, embs):
+                    self._cache[t] = e
+                done = min(start + len(chunk), n_m)
+                if progress is not None:
+                    progress(done, n_m)
+                logger.info(
+                    "Embeddings specs: %d/%d textos unicos codificados.",
+                    done,
+                    n_m,
+                )
 
-        any_emb = next(iter(self._cache.values()))
-        out = np.zeros((len(texts), any_emb.shape[0]), dtype=np.float32)
+        out = np.zeros((len(texts), d), dtype=np.float32)
         for i, t in enumerate(texts):
             out[i] = self._cache[t]
         return out

@@ -19,10 +19,16 @@ class BalancingConfig:
 
     A ordem aplicada e: undersample_neg -> oversample_pos -> class_weight (loss).
     Sao todos opcionais e configuraveis via Streamlit.
+
+    `training_balance`:
+        - ``equal`` (padrao): apos undersample dos negativos, replica positivos com
+          reposicao ate ``len(neg) == len(pos)`` no conjunto de treino (50/50).
+        - ``legacy``: mantem ``oversample_pos_factor`` sobre os positivos originais.
     """
 
     undersample_neg_ratio: float = 3.0
     oversample_pos_factor: float = 2.0
+    training_balance: str = "equal"  # "equal" | "legacy"
     use_class_weight: bool = True
     pos_weight_override: float | None = None
     seed: int = 42
@@ -31,6 +37,7 @@ class BalancingConfig:
         return {
             "undersample_neg_ratio": self.undersample_neg_ratio,
             "oversample_pos_factor": self.oversample_pos_factor,
+            "training_balance": self.training_balance,
             "use_class_weight": self.use_class_weight,
             "pos_weight_override": self.pos_weight_override,
             "seed": self.seed,
@@ -105,19 +112,35 @@ def apply_undersampling_oversampling(
     else:
         chosen_neg = neg_idx
 
-    if cfg.oversample_pos_factor and cfg.oversample_pos_factor > 1.0:
+    balance = getattr(cfg, "training_balance", "equal") or "equal"
+    if balance == "equal":
+        n_pos_target = int(len(chosen_neg))
+        chosen_pos = rng.choice(pos_idx, size=n_pos_target, replace=True)
+        logger.info(
+            "Balanceamento 50/50: pos %d originais -> %d (reposicao), neg %d->%d",
+            n_pos, len(chosen_pos), n_neg, len(chosen_neg),
+        )
+    elif cfg.oversample_pos_factor and cfg.oversample_pos_factor > 1.0:
         n_pos_target = int(round(n_pos * cfg.oversample_pos_factor))
         chosen_pos = rng.choice(pos_idx, size=n_pos_target, replace=True)
+        logger.info(
+            "Balanceamento legado: pos %d->%d, neg %d->%d (ratio_neg/pos=%.2f, oversample_x=%.2f)",
+            n_pos, len(chosen_pos), n_neg, len(chosen_neg),
+            cfg.undersample_neg_ratio, cfg.oversample_pos_factor,
+        )
     else:
         chosen_pos = pos_idx
+        logger.info(
+            "Balanceamento (sem oversample extra): pos %d, neg %d->%d",
+            n_pos, n_neg, len(chosen_neg),
+        )
 
     final_idx = np.concatenate([chosen_pos, chosen_neg])
     rng.shuffle(final_idx)
     Xb, yb = X[final_idx], y[final_idx]
     logger.info(
-        "Balanceamento aplicado: pos %d->%d, neg %d->%d (target_ratio_neg/pos=%.2f, oversample_x=%.2f)",
-        n_pos, len(chosen_pos), n_neg, len(chosen_neg),
-        cfg.undersample_neg_ratio, cfg.oversample_pos_factor,
+        "Treino balanceado final: %d linhas (%.1f%% positivos)",
+        len(yb), 100.0 * float(yb.mean()),
     )
     return Xb, yb
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import joblib
 import numpy as np
@@ -66,6 +66,18 @@ BERTIMBAU_BASE_STS = "rufimelo/Legal-BERTimbau-sts-base-ma-v3"
 BERTIMBAU_LARGE_STS = "rufimelo/Legal-BERTimbau-sts-large-ma-v3"
 
 logger = logging.getLogger(__name__)
+
+# Callback opcional (p.ex. Streamlit): (progresso 0..1, mensagem curta).
+ProgressCallback = Callable[[float, str], None]
+
+
+def _safe_progress(cb: ProgressCallback | None, t: float, msg: str) -> None:
+    if cb is None:
+        return
+    try:
+        cb(float(max(0.0, min(1.0, t))), str(msg)[:120])
+    except Exception:  # noqa: BLE001
+        pass
 
 
 @dataclass
@@ -151,15 +163,22 @@ class FeaturePreprocessor:
         self._fitted = False
 
     # ------------------------------------------------------------------ FIT
-    def fit(self, df: pd.DataFrame) -> "FeaturePreprocessor":
+    def fit(
+        self,
+        df: pd.DataFrame,
+        *,
+        progress_callback: ProgressCallback | None = None,
+    ) -> "FeaturePreprocessor":
         """Ajusta vectorizers e scaler no dataset."""
         cfg = self.config
         logger.info("Fit do preprocessor em %d linhas...", len(df))
+        _safe_progress(progress_callback, 0.0, "A iniciar enriquecimento (fit)...")
 
         logger.info("Pre-processando especificacoes (stemming PT-BR)...")
         specs_a = preprocess_specs_batch(df["especificacao_monitorado"].tolist())
         specs_b = preprocess_specs_batch(df["especificacao_colidente"].tolist())
         all_specs = specs_a + specs_b
+        _safe_progress(progress_callback, 0.05, "Especificacoes preprocessadas; TF-IDF palavras...")
 
         logger.info("Ajustando TF-IDF word (1,2)...")
         self.tfidf_word = TfidfVectorizer(
@@ -169,6 +188,7 @@ class FeaturePreprocessor:
             sublinear_tf=True,
         )
         self.tfidf_word.fit(all_specs)
+        _safe_progress(progress_callback, 0.10, "TF-IDF palavras ajustado; TF-IDF caracteres...")
 
         self.idf_word_lookup = {
             term: float(idf)
@@ -185,6 +205,7 @@ class FeaturePreprocessor:
             sublinear_tf=True,
         )
         self.tfidf_char.fit(all_specs)
+        _safe_progress(progress_callback, 0.14, "TF-IDF caracteres ajustado; embeddings de especificacao...")
 
         if cfg.use_embeddings:
             cache_path = Path(cfg.embedding_cache_path) if cfg.embedding_cache_path else None
@@ -192,6 +213,7 @@ class FeaturePreprocessor:
                 model_name=cfg.embedding_model,
                 cache_path=cache_path,
             )
+        _safe_progress(progress_callback, 0.18, "Detector de tokens genericos...")
 
         # Detector de tokens genericos (auto-deteccao via DF)
         all_brands = (
@@ -206,6 +228,7 @@ class FeaturePreprocessor:
             "GenericTokenDetector ajustado: %d tokens genericos auto-detectados de %d marcas",
             len(self.generic_detector.generic_set), len(all_brands),
         )
+        _safe_progress(progress_callback, 0.22, "Embeddings de marca (cache)...")
 
         # Embedder de marca (separado do de specs para permitir modelo PT-BR especializado)
         if cfg.use_brand_embeddings:
@@ -234,6 +257,7 @@ class FeaturePreprocessor:
                     )
                 except Exception:  # noqa: BLE001
                     pass
+        _safe_progress(progress_callback, 0.26, "Classes Nice e prior de pares...")
 
         self.top_classes = fit_top_k_classes(
             df["classe_marca_monitorada"].tolist(),
@@ -265,34 +289,67 @@ class FeaturePreprocessor:
 
         self.feature_names_ordered = canonical_feature_order(self.top_classes)
 
-        X = self._compute_matrix(df, specs_a, specs_b, fitting=True)
+        _safe_progress(progress_callback, 0.28, "A calcular matriz de features (1a passagem)...")
+        X = self._compute_matrix(
+            df, specs_a, specs_b, fitting=True,
+            show_progress=False,
+            progress_callback=progress_callback,
+            progress_base=0.28,
+            progress_span=0.68,
+        )
+        _safe_progress(progress_callback, 0.96, "StandardScaler (normalizacao)...")
         self.scaler = StandardScaler(with_mean=True, with_std=True)
         self.scaler.fit(X)
 
         self._fitted = True
+        _safe_progress(progress_callback, 1.0, "Fit concluido.")
         logger.info("Fit concluido. %d features na ordem canonica.", X.shape[1])
         return self
 
     # ------------------------------------------------------------- TRANSFORM
     def transform(
-        self, df: pd.DataFrame, scale: bool = True, show_progress: bool = False
+        self,
+        df: pd.DataFrame,
+        scale: bool = True,
+        show_progress: bool = False,
+        *,
+        progress_callback: ProgressCallback | None = None,
     ) -> np.ndarray:
         if not self._fitted:
             raise RuntimeError("FeaturePreprocessor.transform chamado antes de fit().")
 
         if show_progress:
             logger.info("Pre-processando especificacoes (transform)...")
+        _safe_progress(progress_callback, 0.0, "A preparar textos (transform)...")
         specs_a = preprocess_specs_batch(df["especificacao_monitorado"].tolist())
         specs_b = preprocess_specs_batch(df["especificacao_colidente"].tolist())
+        _safe_progress(progress_callback, 0.02, "A calcular matriz de features...")
 
-        X = self._compute_matrix(df, specs_a, specs_b, fitting=False, show_progress=show_progress)
+        use_tqdm = bool(show_progress) and progress_callback is None
+        X = self._compute_matrix(
+            df, specs_a, specs_b, fitting=False,
+            show_progress=use_tqdm,
+            progress_callback=progress_callback,
+            progress_base=0.02,
+            progress_span=0.96,
+        )
         if scale and self.scaler is not None:
+            _safe_progress(progress_callback, 0.98, "A aplicar normalizacao (scaler)...")
             X = self.scaler.transform(X)
+        _safe_progress(progress_callback, 1.0, "Transform concluido.")
         return X.astype(np.float32, copy=False)
 
-    def fit_transform(self, df: pd.DataFrame, scale: bool = True) -> np.ndarray:
-        self.fit(df)
-        return self.transform(df, scale=scale)
+    def fit_transform(
+        self,
+        df: pd.DataFrame,
+        scale: bool = True,
+        *,
+        progress_callback: ProgressCallback | None = None,
+    ) -> np.ndarray:
+        self.fit(df, progress_callback=progress_callback)
+        return self.transform(
+            df, scale=scale, show_progress=False, progress_callback=progress_callback,
+        )
 
     # -------------------------------------------------------------- INTERNALS
     def _compute_matrix(
@@ -302,7 +359,15 @@ class FeaturePreprocessor:
         specs_b: list[str],
         fitting: bool,
         show_progress: bool = False,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        progress_base: float = 0.0,
+        progress_span: float = 1.0,
     ) -> np.ndarray:
+        def emit(loc_01: float, msg: str) -> None:
+            t = progress_base + progress_span * max(0.0, min(1.0, loc_01))
+            _safe_progress(progress_callback, t, msg)
+
         n = len(df)
         feat_names = self.feature_names_ordered
         if not feat_names:
@@ -323,6 +388,7 @@ class FeaturePreprocessor:
         if show_progress:
             iterator = tqdm(iterator, desc="Features nominal+lex", total=n)
 
+        row_report = max(1, n // 80)
         for i in iterator:
             nominal = build_nominal_features(ma[i], mb[i])
             for k in nominal_keys:
@@ -342,6 +408,11 @@ class FeaturePreprocessor:
                 if col is not None:
                     X[i, col] = v
 
+            if progress_callback is not None and (i % row_report == 0 or i == n - 1):
+                loc = 0.14 * (i + 1) / max(1, n)
+                emit(loc, f"Nome + texto + atividade: {i + 1:,}/{n:,}")
+
+        emit(0.15, "Similaridade TF-IDF (palavra e caract.)...")
         if self.tfidf_word is not None:
             wa = self.tfidf_word.transform(specs_a)
             wb = self.tfidf_word.transform(specs_b)
@@ -354,23 +425,39 @@ class FeaturePreprocessor:
             cos_char = row_cosine(ca_mat, cb_mat)
             X[:, idx["spec_cosine_tfidf_char"]] = cos_char
 
+        emit(0.20, "Embeddings semanticos das especificacoes (pode demorar em CPU)...")
         if self.embedding_provider is not None:
             unique_specs = list(dict.fromkeys(specs_a + specs_b))
+            nu = len(unique_specs)
             if show_progress:
-                logger.info("Computando embeddings para %d textos unicos...", len(unique_specs))
-            self.embedding_provider.encode(unique_specs)
+                logger.info("Computando embeddings para %d textos unicos...", nu)
+
+            def _emb_prog_unique(done: int, total: int) -> None:
+                if total <= 0:
+                    return
+                loc = 0.20 + 0.32 * (done / total)
+                emit(
+                    loc,
+                    f"Embeddings specs (textos unicos): {done:,}/{total:,} — aguarde (CPU)...",
+                )
+
+            self.embedding_provider.encode(unique_specs, progress=_emb_prog_unique)
+            emit(0.52, "Embeddings por linha (reutilizando cache)...")
             emb_a = self.embedding_provider.encode(specs_a)
             emb_b = self.embedding_provider.encode(specs_b)
             cos_emb = row_cosine(emb_a, emb_b)
             X[:, idx["spec_cosine_emb"]] = cos_emb
             self.embedding_provider.save_cache()
+        emit(0.54, "Embeddings de especificacao concluidos.")
 
+        emit(0.56, "One-hot de classes Nice...")
         cls_mat, cls_names = build_class_features_matrix(ca, cb, self.top_classes)
         for j, name in enumerate(cls_names):
             col = idx.get(name)
             if col is not None:
                 X[:, col] = cls_mat[:, j]
 
+        emit(0.60, "Embeddings de marcas (cosine)...")
         # Brand embedding cosines (em batch para reaproveitar o modelo)
         if self.brand_embedder is not None:
             ma_norm = [apply_base_normalization(s) for s in ma]
@@ -384,8 +471,10 @@ class FeaturePreprocessor:
                     X[:, col] = vec.astype(np.float32, copy=False)
             self.brand_embedder.save_cache()
 
+        emit(0.70, "Interacoes e features nominal-extra...")
         # Interactions + Extra-nominal (precisam de cosines ja calculados acima)
         extra_keys = extra_nominal_feature_names()
+        row_report2 = max(1, n // 80)
         for i in range(n):
             nominal_block = {k: float(X[i, idx[k]]) for k in nominal_keys if k in idx}
             spec_block = {
@@ -412,10 +501,23 @@ class FeaturePreprocessor:
                     if col is not None and k in extras:
                         X[i, col] = extras[k]
 
+            if progress_callback is not None and (i % row_report2 == 0 or i == n - 1):
+                loc = 0.70 + 0.14 * (i + 1) / max(1, n)
+                emit(loc, f"Interacoes / genericos: {i + 1:,}/{n:,}")
+
         # ----------------------- Sprint 2 features -----------------------
         if self.config.use_extra_advanced:
-            self._fill_extra_advanced(X, idx, ma, mb, ca, cb, specs_a, specs_b, df)
+            emit(0.86, "Features Sprint 2 (item-level, anchor, simhash)...")
+            self._fill_extra_advanced(
+                X, idx, ma, mb, ca, cb, specs_a, specs_b, df,
+                progress_callback=progress_callback,
+                progress_base=progress_base + 0.86 * progress_span,
+                progress_span=0.14 * progress_span,
+            )
+        elif progress_callback is not None:
+            emit(0.92, "Features Sprint 2 desligadas na config.")
 
+        emit(1.0, "Matriz de features pronta.")
         return X
 
     def _fill_extra_advanced(
@@ -429,6 +531,10 @@ class FeaturePreprocessor:
         specs_a: list[str],
         specs_b: list[str],
         df: pd.DataFrame,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        progress_base: float = 0.0,
+        progress_span: float = 1.0,
     ) -> None:
         """Preenche as 10 features Sprint 2 em batch.
 
@@ -455,6 +561,7 @@ class FeaturePreprocessor:
         spec_a_raw = df["especificacao_monitorado"].astype(str).tolist()
         spec_b_raw = df["especificacao_colidente"].astype(str).tolist()
 
+        row_rep = max(1, n // 60)
         for i in range(n):
             if cfg_item:
                 a_items = preprocess_spec_items(spec_a_raw[i])
@@ -490,6 +597,13 @@ class FeaturePreprocessor:
                 col = idx.get(k)
                 if col is not None:
                     X[i, col] = v
+
+            if progress_callback is not None and (i % row_rep == 0 or i == n - 1):
+                loc = progress_base + progress_span * (i + 1) / max(1, n)
+                _safe_progress(
+                    progress_callback, loc,
+                    f"Sprint 2 (item/anchor/simhash): {i + 1:,}/{n:,}",
+                )
 
     # ----------------------------------------------------------- PERSISTENCE
     def save(self, path: str | Path) -> None:
@@ -574,4 +688,5 @@ class FeaturePreprocessor:
 __all__ = [
     "PreprocessorConfig",
     "FeaturePreprocessor",
+    "ProgressCallback",
 ]

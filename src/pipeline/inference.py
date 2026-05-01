@@ -33,6 +33,11 @@ from ..model.arch_bagging import (
 )
 from ..model.calibration import PlattCalibrator
 from ..model.evaluate import predict_scores
+from ..model.explain import (
+    predict_hybrid_bagging,
+    predict_hybrid_bagging_components,
+)
+from ..model.logreg_bagging import load_logreg_bagging
 from ..model.mlp import BrandSimilarityMLP, MLPConfig
 from .preprocessor import FeaturePreprocessor
 
@@ -98,8 +103,10 @@ class InferenceArtifacts:
     calibrator: PlattCalibrator | None = None
     ensemble_models: list[nn.Module] = field(default_factory=list)
     ensemble_calibrators: list[PlattCalibrator] = field(default_factory=list)
-    # Bagging das 4 arquiteturas (MLP + Two-Tower + FT-Transformer + Multi-Task)
+    # Bagging de N MLPs aleatorias
     arch_bagging_members: list[Any] | None = None
+    # Bagging de N regressoes logisticas (modo hibrido com arch_bagging)
+    logreg_bagging_members: list[Any] | None = None
 
 
 def load_artifacts(
@@ -110,6 +117,7 @@ def load_artifacts(
     calibrator_path: str | Path | None = None,
     ensemble_dir: str | Path | None = None,
     arch_bagging_dir: str | Path | None = None,
+    logreg_bagging_dir: str | Path | None = None,
 ) -> InferenceArtifacts:
     """Carrega config_json + preprocessor + modelo (singleton ou ensemble) + calibrador.
 
@@ -148,6 +156,40 @@ def load_artifacts(
     ens_models: list[nn.Module] = []
     ens_calibrators: list[PlattCalibrator] = []
     arch_bagging_members: list[Any] | None = None
+    logreg_bagging_members: list[Any] | None = None
+
+    # Auto-detect logreg_bagging_dir como pasta irma das demais (se nao passada).
+    if logreg_bagging_dir is None:
+        for sibling_anchor in (
+            arch_bagging_dir, ensemble_dir, model_path, json_path,
+        ):
+            if sibling_anchor is None:
+                continue
+            anchor = Path(sibling_anchor)
+            base = anchor if anchor.is_dir() else anchor.parent
+            candidate = base.parent / "ensemble_logreg"
+            if candidate.exists():
+                logreg_bagging_dir = candidate
+                break
+            candidate2 = base / "ensemble_logreg"
+            if candidate2.exists():
+                logreg_bagging_dir = candidate2
+                break
+
+    if logreg_bagging_dir is not None and Path(logreg_bagging_dir).exists():
+        try:
+            logreg_bagging_members = load_logreg_bagging(
+                Path(logreg_bagging_dir),
+            )
+            logger.info(
+                "LogReg bagging carregado de %s (%d modelos)",
+                logreg_bagging_dir, len(logreg_bagging_members),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Falha ao carregar logreg_bagging_dir %s: %s",
+                logreg_bagging_dir, exc,
+            )
 
     if arch_bagging_dir is not None and Path(arch_bagging_dir).exists():
         from ..model.arch_bagging import load_architecture_bagging
@@ -198,6 +240,7 @@ def load_artifacts(
         ensemble_models=ens_models,
         ensemble_calibrators=ens_calibrators,
         arch_bagging_members=arch_bagging_members,
+        logreg_bagging_members=logreg_bagging_members,
     )
 
 
@@ -234,10 +277,13 @@ def _load_ensemble(
 # =============================================================================
 
 def _final_score(artifacts: InferenceArtifacts, X: np.ndarray) -> np.ndarray:
-    """Aplica bagging 4-arquiteturas, ensemble por seeds, ou modelo unico."""
-    if artifacts.arch_bagging_members:
-        return predict_architecture_bagging(
-            artifacts.arch_bagging_members, X, apply_calibration=True,
+    """Aplica bagging hibrido (MLPs + LogRegs), ensemble legado ou modelo unico."""
+    if artifacts.arch_bagging_members or artifacts.logreg_bagging_members:
+        return predict_hybrid_bagging(
+            artifacts.arch_bagging_members,
+            artifacts.logreg_bagging_members,
+            X,
+            apply_calibration=True,
         )
     if artifacts.ensemble_models:
         accum = np.zeros(X.shape[0], dtype=np.float64)
@@ -285,18 +331,43 @@ def score_pair(
         "x_scaled": X[0].tolist(),
         "calibration_applied": bool(
             artifacts.calibrator and artifacts.calibrator.fitted
-        ) or bool(artifacts.ensemble_models) or bool(artifacts.arch_bagging_members),
+        ) or bool(artifacts.ensemble_models) or bool(
+            artifacts.arch_bagging_members
+        ) or bool(artifacts.logreg_bagging_members),
         "ensemble_size": len(artifacts.ensemble_models),
         "architecture_bagging": bool(artifacts.arch_bagging_members),
+        "logreg_bagging": bool(artifacts.logreg_bagging_members),
+        "hybrid_bagging": bool(
+            artifacts.arch_bagging_members
+            or artifacts.logreg_bagging_members
+        ),
     }
-    if artifacts.arch_bagging_members:
-        comp = predict_architecture_bagging_components(
-            artifacts.arch_bagging_members, X, apply_calibration=True,
-        )[0]
-        out["score_by_architecture"] = {
-            m.key: float(comp[j])
-            for j, m in enumerate(artifacts.arch_bagging_members)
-        }
+    if (
+        artifacts.arch_bagging_members
+        or artifacts.logreg_bagging_members
+    ):
+        comp_mat, comp_info = predict_hybrid_bagging_components(
+            artifacts.arch_bagging_members,
+            artifacts.logreg_bagging_members,
+            X,
+            apply_calibration=True,
+        )
+        comp_row = comp_mat[0]
+        out["score_by_member"] = [
+            {
+                "kind": str(info["kind"]),
+                "key": str(info["key"]),
+                "score": float(comp_row[j]),
+            }
+            for j, info in enumerate(comp_info)
+        ]
+        # compat: mantem score_by_architecture (apenas MLPs) para callers antigos
+        if artifacts.arch_bagging_members:
+            mlp_scores: dict[str, float] = {}
+            for j, info in enumerate(comp_info):
+                if info["kind"] == "mlp":
+                    mlp_scores[str(info["key"])] = float(comp_row[j])
+            out["score_by_architecture"] = mlp_scores
     return out
 
 

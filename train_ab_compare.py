@@ -143,6 +143,7 @@ def _train_one_variant(
     bal = BalancingConfig(
         undersample_neg_ratio=3.0,
         oversample_pos_factor=2.0,
+        training_balance="equal",
         use_class_weight=True,
         seed=42,
     )
