@@ -37,6 +37,8 @@ from ..model.explain import (
     predict_hybrid_bagging,
     predict_hybrid_bagging_components,
 )
+from ..model.forest_bagging import load_forest_bagging
+from ..model.stacking_meta import load_meta_stacking_bundle
 from ..model.logreg_bagging import load_logreg_bagging
 from ..model.mlp import BrandSimilarityMLP, MLPConfig
 from .preprocessor import FeaturePreprocessor
@@ -107,6 +109,9 @@ class InferenceArtifacts:
     arch_bagging_members: list[Any] | None = None
     # Bagging de N regressoes logisticas (modo hibrido com arch_bagging)
     logreg_bagging_members: list[Any] | None = None
+    # Bagging de N florestas RF/ExtraTrees (modo hibrido)
+    forest_bagging_members: list[Any] | None = None
+    meta_stacking_model: nn.Module | None = None
 
 
 def load_artifacts(
@@ -118,6 +123,7 @@ def load_artifacts(
     ensemble_dir: str | Path | None = None,
     arch_bagging_dir: str | Path | None = None,
     logreg_bagging_dir: str | Path | None = None,
+    forest_bagging_dir: str | Path | None = None,
 ) -> InferenceArtifacts:
     """Carrega config_json + preprocessor + modelo (singleton ou ensemble) + calibrador.
 
@@ -157,9 +163,9 @@ def load_artifacts(
     ens_calibrators: list[PlattCalibrator] = []
     arch_bagging_members: list[Any] | None = None
     logreg_bagging_members: list[Any] | None = None
+    forest_bagging_members: list[Any] | None = None
 
-    # Auto-detect logreg_bagging_dir como pasta irma das demais (se nao passada).
-    if logreg_bagging_dir is None:
+    def _resolve_sibling(name: str) -> Path | None:
         for sibling_anchor in (
             arch_bagging_dir, ensemble_dir, model_path, json_path,
         ):
@@ -167,14 +173,17 @@ def load_artifacts(
                 continue
             anchor = Path(sibling_anchor)
             base = anchor if anchor.is_dir() else anchor.parent
-            candidate = base.parent / "ensemble_logreg"
-            if candidate.exists():
-                logreg_bagging_dir = candidate
-                break
-            candidate2 = base / "ensemble_logreg"
-            if candidate2.exists():
-                logreg_bagging_dir = candidate2
-                break
+            cand1 = base.parent / name
+            if cand1.exists():
+                return cand1
+            cand2 = base / name
+            if cand2.exists():
+                return cand2
+        return None
+
+    # Auto-detect logreg_bagging_dir como pasta irma das demais (se nao passada).
+    if logreg_bagging_dir is None:
+        logreg_bagging_dir = _resolve_sibling("ensemble_logreg")
 
     if logreg_bagging_dir is not None and Path(logreg_bagging_dir).exists():
         try:
@@ -189,6 +198,25 @@ def load_artifacts(
             logger.warning(
                 "Falha ao carregar logreg_bagging_dir %s: %s",
                 logreg_bagging_dir, exc,
+            )
+
+    # Auto-detect forest_bagging_dir como pasta irma das demais (se nao passada).
+    if forest_bagging_dir is None:
+        forest_bagging_dir = _resolve_sibling("ensemble_forest")
+
+    if forest_bagging_dir is not None and Path(forest_bagging_dir).exists():
+        try:
+            forest_bagging_members = load_forest_bagging(
+                Path(forest_bagging_dir),
+            )
+            logger.info(
+                "Forest bagging carregado de %s (%d modelos)",
+                forest_bagging_dir, len(forest_bagging_members),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Falha ao carregar forest_bagging_dir %s: %s",
+                forest_bagging_dir, exc,
             )
 
     if arch_bagging_dir is not None and Path(arch_bagging_dir).exists():
@@ -230,6 +258,18 @@ def load_artifacts(
                 "Ensemble (seeds) carregado de %s (%d membros)", ensemble_dir, len(ens_models),
             )
 
+    meta_stacking_model: nn.Module | None = None
+    ms_dir = _resolve_sibling("meta_stacking")
+    ms_conf = cfg.get("meta_stacking") or {}
+    if ms_conf.get("enabled") and ms_dir is not None and Path(ms_dir).exists():
+        try:
+            meta_stacking_model, _ms_meta = load_meta_stacking_bundle(
+                Path(ms_dir), map_location=map_location,
+            )
+            logger.info("Meta-stacking carregado de %s", ms_dir)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Falha ao carregar meta_stacking: %s", exc)
+
     return InferenceArtifacts(
         model=model,
         preprocessor=preproc,
@@ -241,6 +281,8 @@ def load_artifacts(
         ensemble_calibrators=ens_calibrators,
         arch_bagging_members=arch_bagging_members,
         logreg_bagging_members=logreg_bagging_members,
+        forest_bagging_members=forest_bagging_members,
+        meta_stacking_model=meta_stacking_model,
     )
 
 
@@ -277,12 +319,32 @@ def _load_ensemble(
 # =============================================================================
 
 def _final_score(artifacts: InferenceArtifacts, X: np.ndarray) -> np.ndarray:
-    """Aplica bagging hibrido (MLPs + LogRegs), ensemble legado ou modelo unico."""
-    if artifacts.arch_bagging_members or artifacts.logreg_bagging_members:
+    """Aplica meta-stacking, bagging hibrido, ensemble legado ou modelo unico."""
+    if getattr(artifacts, "meta_stacking_model", None) is not None:
+        from ..model.stacking_meta import (
+            build_meta_design_matrix,
+            predict_meta_stacking_scores,
+        )
+
+        Z, _ = build_meta_design_matrix(
+            X,
+            artifacts.arch_bagging_members,
+            artifacts.logreg_bagging_members,
+            artifacts.forest_bagging_members,
+        )
+        return predict_meta_stacking_scores(
+            artifacts.meta_stacking_model, Z,
+        )
+    if (
+        artifacts.arch_bagging_members
+        or artifacts.logreg_bagging_members
+        or artifacts.forest_bagging_members
+    ):
         return predict_hybrid_bagging(
             artifacts.arch_bagging_members,
             artifacts.logreg_bagging_members,
             X,
+            forest_members=artifacts.forest_bagging_members or None,
             apply_calibration=True,
         )
     if artifacts.ensemble_models:
@@ -333,23 +395,30 @@ def score_pair(
             artifacts.calibrator and artifacts.calibrator.fitted
         ) or bool(artifacts.ensemble_models) or bool(
             artifacts.arch_bagging_members
-        ) or bool(artifacts.logreg_bagging_members),
+        ) or bool(artifacts.logreg_bagging_members) or bool(
+            artifacts.forest_bagging_members
+        ),
         "ensemble_size": len(artifacts.ensemble_models),
         "architecture_bagging": bool(artifacts.arch_bagging_members),
         "logreg_bagging": bool(artifacts.logreg_bagging_members),
+        "forest_bagging": bool(artifacts.forest_bagging_members),
         "hybrid_bagging": bool(
             artifacts.arch_bagging_members
             or artifacts.logreg_bagging_members
+            or artifacts.forest_bagging_members
         ),
+        "meta_stacking": bool(getattr(artifacts, "meta_stacking_model", None)),
     }
     if (
         artifacts.arch_bagging_members
         or artifacts.logreg_bagging_members
+        or artifacts.forest_bagging_members
     ):
         comp_mat, comp_info = predict_hybrid_bagging_components(
             artifacts.arch_bagging_members,
             artifacts.logreg_bagging_members,
             X,
+            forest_members=artifacts.forest_bagging_members or None,
             apply_calibration=True,
         )
         comp_row = comp_mat[0]

@@ -1,11 +1,15 @@
 """Explicabilidade: permutation importance (global) + integrated gradients (por par).
 
-Inclui suporte a bagging hibrido (MLPs + LogRegs):
-- `predict_hybrid_bagging` agrega scores das duas listas por media simples.
+Inclui suporte a bagging hibrido (MLPs + LogRegs + Florestas):
+- `predict_hybrid_bagging` agrega scores das tres listas por media simples.
 - `permutation_importance_hybrid` usa o score agregado como base.
-- `integrated_gradients_hybrid_row` combina IG das MLPs (captum) com a
-  contribuicao analitica das LogRegs (`coef_ * (x - baseline)`), que para um
-  modelo linear coincide exatamente com Integrated Gradients.
+- `integrated_gradients_hybrid_row` combina IG das MLPs (captum), a
+  contribuicao analitica das LogRegs (`coef_ * (x - baseline)`, equivalente
+  a IG num modelo linear) e a contribuicao TreeSHAP das Florestas. Como cada
+  fonte vive em uma escala propria (logit para MLP/LogReg, probabilidade para
+  TreeSHAP), as contribuicoes sao normalizadas por modelo (`/ sum(|c|)`)
+  antes de tirar media; isso preserva sinal/ranking e torna as escalas
+  comparaveis.
 """
 from __future__ import annotations
 
@@ -20,6 +24,17 @@ from torch import nn
 from .evaluate import default_device, predict_scores
 
 logger = logging.getLogger(__name__)
+
+
+def __getattr__(name: str) -> Any:
+    """Lazy import: evita dependencia circular e caches antigos sem o simbolo."""
+    if name == "permutation_importance_stacking_context":
+        from .stacking_meta import (
+            permutation_importance_stacking_context as _permutation_importance_stacking_context,
+        )
+
+        return _permutation_importance_stacking_context
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def permutation_importance(
@@ -208,7 +223,7 @@ def integrated_gradients_arch_bagging_row(
 
 
 # =============================================================================
-# Bagging hibrido: MLPs + LogRegs
+# Bagging hibrido: MLPs + LogRegs + Florestas
 # =============================================================================
 
 def predict_hybrid_bagging(
@@ -216,19 +231,24 @@ def predict_hybrid_bagging(
     logreg_members: Sequence[Any] | None,
     X: np.ndarray,
     *,
+    forest_members: Sequence[Any] | None = None,
     device: str | None = None,
     apply_calibration: bool = True,
 ) -> np.ndarray:
     """Score final do bagging hibrido = media de TODAS as probabilidades
-    (MLPs + LogRegs) calibradas Platt por modelo.
+    (MLPs + LogRegs + Florestas) calibradas Platt por modelo.
     """
     from .arch_bagging import predict_architecture_bagging_components
     from .logreg_bagging import predict_logreg_bagging_components
+    from .forest_bagging import predict_forest_bagging_components
 
     has_mlp = bool(mlp_members)
     has_lr = bool(logreg_members)
-    if not has_mlp and not has_lr:
-        raise ValueError("predict_hybrid_bagging: sem MLPs nem LogRegs.")
+    has_rf = bool(forest_members)
+    if not (has_mlp or has_lr or has_rf):
+        raise ValueError(
+            "predict_hybrid_bagging: sem MLPs, LogRegs nem Florestas."
+        )
 
     parts: list[np.ndarray] = []
     if has_mlp:
@@ -245,6 +265,13 @@ def predict_hybrid_bagging(
                 apply_calibration=apply_calibration,
             )
         )
+    if has_rf:
+        parts.append(
+            predict_forest_bagging_components(
+                list(forest_members), X,
+                apply_calibration=apply_calibration,
+            )
+        )
     comp = np.concatenate(parts, axis=1)
     return comp.mean(axis=1).astype(np.float32)
 
@@ -254,22 +281,26 @@ def predict_hybrid_bagging_components(
     logreg_members: Sequence[Any] | None,
     X: np.ndarray,
     *,
+    forest_members: Sequence[Any] | None = None,
     device: str | None = None,
     apply_calibration: bool = True,
 ) -> tuple[np.ndarray, list[dict[str, str]]]:
     """Retorna (matriz_(N, K_total), info_membros).
 
-    `info_membros` traz `{"key": ..., "kind": "mlp"|"logreg"}` na mesma ordem
-    das colunas da matriz (MLPs primeiro, depois LogRegs).
+    `info_membros` traz `{"key": ..., "kind": "mlp"|"logreg"|"rf"|"extratrees"}`
+    na mesma ordem das colunas da matriz (MLPs primeiro, depois LogRegs,
+    depois Florestas).
     """
     from .arch_bagging import predict_architecture_bagging_components
     from .logreg_bagging import predict_logreg_bagging_components
+    from .forest_bagging import predict_forest_bagging_components
 
     has_mlp = bool(mlp_members)
     has_lr = bool(logreg_members)
-    if not has_mlp and not has_lr:
+    has_rf = bool(forest_members)
+    if not (has_mlp or has_lr or has_rf):
         raise ValueError(
-            "predict_hybrid_bagging_components: sem MLPs nem LogRegs."
+            "predict_hybrid_bagging_components: sem MLPs, LogRegs nem Florestas."
         )
 
     parts: list[np.ndarray] = []
@@ -292,6 +323,17 @@ def predict_hybrid_bagging_components(
         )
         for m in logreg_members:
             info.append({"key": str(m.key), "kind": "logreg"})
+    if has_rf:
+        parts.append(
+            predict_forest_bagging_components(
+                list(forest_members), X,
+                apply_calibration=apply_calibration,
+            )
+        )
+        for m in forest_members:
+            fam = str(getattr(m, "family", "rf") or "rf")
+            kind = "extratrees" if fam == "extratrees" else "rf"
+            info.append({"key": str(m.key), "kind": kind})
 
     comp = np.concatenate(parts, axis=1)
     return comp, info
@@ -303,6 +345,8 @@ def permutation_importance_hybrid(
     X: np.ndarray,
     y: np.ndarray,
     feature_names: Sequence[str],
+    *,
+    forest_members: Sequence[Any] | None = None,
     metric: str = "pr_auc",
     n_repeats: int = 3,
     seed: int = 42,
@@ -317,6 +361,7 @@ def permutation_importance_hybrid(
 
     base_scores = predict_hybrid_bagging(
         mlp_members, logreg_members, X,
+        forest_members=forest_members,
         device=device, apply_calibration=True,
     )
     if metric == "pr_auc":
@@ -335,6 +380,7 @@ def permutation_importance_hybrid(
             rng.shuffle(X_perm[:, j])
             scores = predict_hybrid_bagging(
                 mlp_members, logreg_members, X_perm,
+                forest_members=forest_members,
                 device=device, apply_calibration=True,
             )
             if metric == "pr_auc":
@@ -382,25 +428,106 @@ def _logreg_ig_contributions(
     return {str(n): float(contrib[i]) for i, n in enumerate(feature_names)}
 
 
+def _forest_treeshap_contributions(
+    member: Any,
+    x: np.ndarray,
+    feature_names: Sequence[str],
+) -> dict[str, float]:
+    """Contribuicao por feature via TreeSHAP para um membro Floresta.
+
+    Retorna em escala de probabilidade (saida de `predict_proba` da classe 1).
+    A normalizacao por `sum(|c|)` e' aplicada em
+    `integrated_gradients_hybrid_row` antes de promediar com as demais
+    fontes (que vivem em escala de logit).
+    """
+    try:
+        import shap
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "shap nao disponivel (%s); contribuicoes da Floresta zeradas.",
+            exc,
+        )
+        return {str(n): 0.0 for n in feature_names}
+
+    x_arr = np.asarray(x, dtype=np.float32).reshape(1, -1)
+    try:
+        expl = shap.TreeExplainer(member.model)
+        sv = expl.shap_values(x_arr)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "TreeSHAP falhou para %s (%s); contribuicoes zeradas.",
+            getattr(member, "key", "?"), exc,
+        )
+        return {str(n): 0.0 for n in feature_names}
+
+    arr = np.asarray(sv)
+    # Variantes de retorno do shap.TreeExplainer.shap_values:
+    # - lista [classe0, classe1] -> usar classe 1
+    # - ndarray (1, n_feats) -> uso direto
+    # - ndarray (1, n_feats, n_classes) -> selecionar classe 1
+    if isinstance(sv, list) and len(sv) >= 2:
+        arr = np.asarray(sv[1])
+    if arr.ndim == 3:
+        arr = arr[..., -1]
+    arr = arr.reshape(-1)
+
+    if arr.shape[0] != len(feature_names):
+        logger.warning(
+            "TreeSHAP shape %s != n_features %d para %s; zerando.",
+            arr.shape, len(feature_names), getattr(member, "key", "?"),
+        )
+        return {str(n): 0.0 for n in feature_names}
+
+    return {str(n): float(arr[i]) for i, n in enumerate(feature_names)}
+
+
+def _normalize_contrib_dict(
+    contrib: dict[str, float],
+    feature_names: Sequence[str],
+) -> dict[str, float]:
+    """Normaliza um vetor de contribuicoes por sum(|c|) (preserva sinal).
+
+    Mantem escala comparavel entre famílias (logit MLP/LogReg vs probabilidade
+    TreeSHAP). Usa fallback de 1e-12 para evitar divisao por zero.
+    """
+    vals = np.asarray(
+        [float(contrib.get(str(fn), 0.0)) for fn in feature_names],
+        dtype=np.float64,
+    )
+    s = float(np.sum(np.abs(vals)))
+    if s < 1e-12:
+        return {str(fn): 0.0 for fn in feature_names}
+    norm = vals / s
+    return {str(fn): float(norm[i]) for i, fn in enumerate(feature_names)}
+
+
 def integrated_gradients_hybrid_row(
     mlp_members: Sequence[Any] | None,
     logreg_members: Sequence[Any] | None,
     x: np.ndarray,
     feature_names: Sequence[str],
+    *,
+    forest_members: Sequence[Any] | None = None,
     baseline: np.ndarray | None = None,
     n_steps: int = 50,
     device: str | None = None,
 ) -> list[dict[str, float]]:
-    """IG agregado: media das contribuicoes de todos os modelos (MLPs + LogRegs).
+    """IG agregado: media das contribuicoes de TODOS os modelos.
 
-    - MLPs: `integrated_gradients_for_row` por modelo.
-    - LogRegs: contribuicao linear analitica (equivalente a IG num linear).
+    - MLPs: `integrated_gradients_for_row` por modelo (Captum, escala logit).
+    - LogRegs: contribuicao linear analitica `coef * (x - baseline)` (logit).
+    - Florestas: TreeSHAP via `shap.TreeExplainer` (escala probabilidade).
+
+    Cada vetor de contribuicoes e' normalizado por `sum(|c|)` antes da media,
+    para que escalas heterogeneas (logit vs probabilidade) sejam comparaveis;
+    o sinal e o ranking sao preservados.
     """
     has_mlp = bool(mlp_members)
     has_lr = bool(logreg_members)
-    if not has_mlp and not has_lr:
+    has_rf = bool(forest_members)
+    if not (has_mlp or has_lr or has_rf):
         raise ValueError(
-            "integrated_gradients_hybrid_row: sem MLPs nem LogRegs."
+            "integrated_gradients_hybrid_row: sem MLPs, LogRegs nem Florestas."
         )
 
     if device is None:
@@ -417,19 +544,31 @@ def integrated_gradients_hybrid_row(
                 mod, x, feature_names,
                 baseline=baseline, n_steps=n_steps, device=device,
             )
-            for r in rows:
-                acc[str(r["feature"])] += float(r["contribution"])
+            raw = {str(r["feature"]): float(r["contribution"]) for r in rows}
+            norm = _normalize_contrib_dict(raw, feature_names)
+            for k, v in norm.items():
+                acc[k] += float(v)
 
     if has_lr:
         for m in logreg_members:
-            contrib = _logreg_ig_contributions(
+            raw = _logreg_ig_contributions(
                 m, x, feature_names, baseline=baseline,
             )
-            for k, v in contrib.items():
+            norm = _normalize_contrib_dict(raw, feature_names)
+            for k, v in norm.items():
                 acc[k] += float(v)
 
-    n_total = (len(mlp_members) if has_mlp else 0) + (
-        len(logreg_members) if has_lr else 0
+    if has_rf:
+        for m in forest_members:
+            raw = _forest_treeshap_contributions(m, x, feature_names)
+            norm = _normalize_contrib_dict(raw, feature_names)
+            for k, v in norm.items():
+                acc[k] += float(v)
+
+    n_total = (
+        (len(mlp_members) if has_mlp else 0)
+        + (len(logreg_members) if has_lr else 0)
+        + (len(forest_members) if has_rf else 0)
     )
     n_total = max(1, n_total)
     out = [
@@ -446,6 +585,7 @@ __all__ = [
     "permutation_importance",
     "permutation_importance_arch_bagging",
     "permutation_importance_hybrid",
+    "permutation_importance_stacking_context",
     "integrated_gradients_for_row",
     "integrated_gradients_arch_bagging_row",
     "integrated_gradients_hybrid_row",

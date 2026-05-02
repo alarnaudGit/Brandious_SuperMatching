@@ -58,6 +58,25 @@ _TOKEN: dict[str, str] = {
     ),
     "tok_overlap": "Overlap de tokens (OFTA) entre as duas marcas.",
     "tok_fuzzy": "Componente fuzzy de similaridade token-level (OFTA).",
+    "brand_word_exact_overlap_any": (
+        "1 se existe pelo menos um token identico nas duas marcas apos normalizacao "
+        "(ex.: WM em ambos os nomes)."
+    ),
+    "brand_word_exact_overlap_count": (
+        "Numero de tokens distintos na intersecao exata entre as duas marcas."
+    ),
+    "brand_cross_token_substring_len": (
+        "Comprimento da maior substring contigua compartilhada entre algum par de "
+        "tokens de A e B (detecta GMG dentro de GMGG mesmo sem token igual)."
+    ),
+    "brand_cross_token_substring_norm": (
+        "Substring maxima normalizada pelo maior comprimento entre os dois tokens "
+        "do melhor par."
+    ),
+    "brand_cross_token_substring_cov_min": (
+        "Cobertura minima da substring nos dois tokens do melhor par "
+        "(destaca inclusao tipo GMG em GMGG)."
+    ),
     "num_has_digits": (
         "1 se pelo menos uma das marcas contem digitos (ativa ramo de features numericas)."
     ),
@@ -381,6 +400,12 @@ def describe_feature(name: str) -> str:
         return (
             f"Indicador one-hot do driver dominante da heuristica OFTA (`{name}`). "
             "Ver DRIVER_NAMES em src/features/nominal.py."
+        )
+    if name.startswith("pred_"):
+        return (
+            "Probabilidade calibrada (Platt) de um membro base do bagging usada "
+            "como entrada da meta-MLP em modo stacking (nao e uma feature bruta "
+            "do preprocessador)."
         )
     if name.startswith("spec_item_"):
         return (

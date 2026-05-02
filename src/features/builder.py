@@ -60,7 +60,8 @@ def build_static_feature_names(top_classes: list[int]) -> list[str]:
 def canonical_feature_order(top_classes: list[int]) -> list[str]:
     """Ordem canonica COMPLETA (estaticas + cosines TF-IDF/emb + brand_emb + Sprint 2).
 
-    Total esperado: 116 (base) + 31 (Sprint 1) + 10 (Sprint 2) = 157.
+    Total esperado: ~121 (base + overlap marca-marca) + 31 (Sprint 1)
+    + 10 (Sprint 2) = ~162.
     """
     static = build_static_feature_names(top_classes)
     cosines = ["spec_cosine_tfidf_word", "spec_cosine_tfidf_char", "spec_cosine_emb"]

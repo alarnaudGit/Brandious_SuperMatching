@@ -2,7 +2,8 @@
 
 Estrutura:
   enriched/   — planilha e parquet da visao enriquecida
-  weights/    — model.pt, calibrator.json, ensemble/, ensemble_arch_bagging/
+  weights/    — model.pt, calibrator.json, ensemble/, ensemble_arch_bagging/,
+                ensemble_logreg/, ensemble_forest/
   config/     — preprocessor.pkl, brand_similarity_model_config.json, pipeline_meta.json
   reports/    — report.md, feature_importance_*.csv/json, guia de poda
   errors/     — CSVs de falsos positivos / negativos
@@ -40,6 +41,13 @@ from .model.explain import (
     permutation_importance_arch_bagging,
     permutation_importance_hybrid,
     predict_hybrid_bagging,
+)
+from .model.forest_bagging import save_forest_bagging
+from .model.stacking_meta import (
+    build_meta_design_matrix,
+    permutation_importance_stacking_context,
+    predict_meta_stacking_scores,
+    save_meta_stacking_bundle,
 )
 from .model.logreg_bagging import save_logreg_bagging
 from .model.mlp import MLPConfig
@@ -116,13 +124,19 @@ def _make_predict_full(
     arch_bagging_members: list[Any] | None,
     logreg_bagging_members: list[Any] | None,
     calibrator: PlattCalibrator | None,
+    forest_bagging_members: list[Any] | None = None,
 ) -> Callable[[np.ndarray], np.ndarray]:
     def _predict_full(_X: np.ndarray) -> np.ndarray:
-        if arch_bagging_members or logreg_bagging_members:
+        if (
+            arch_bagging_members
+            or logreg_bagging_members
+            or forest_bagging_members
+        ):
             return predict_hybrid_bagging(
                 arch_bagging_members,
                 logreg_bagging_members,
                 _X,
+                forest_members=forest_bagging_members or None,
                 apply_calibration=True,
             )
         if ensemble_members:
@@ -165,6 +179,13 @@ def export_pipeline_bundle(
     auto_imp: bool,
     progress_callback_enriched: ProgressCb | None = None,
     logreg_bagging_members: list[Any] | None = None,
+    forest_bagging_members: list[Any] | None = None,
+    meta_stacking_model: Any | None = None,
+    meta_stacking_enabled: bool = False,
+    stacking_meta_cols: list[dict[str, str]] | None = None,
+    bagging_include_mlp: bool = True,
+    bagging_include_logreg: bool = False,
+    bagging_include_forest: bool = False,
 ) -> tuple[list[dict[str, float]] | None, dict[str, Any]]:
     """Grava bundle completo em `dirs` (subpastas). Devolve (importance_top, meta)."""
     d_enr = dirs["enriched"]
@@ -174,11 +195,24 @@ def export_pipeline_bundle(
     d_err = dirs["errors"]
     root = dirs["root"]
 
-    _predict_full = _make_predict_full(
-        model, ensemble_members,
-        arch_bagging_members, logreg_bagging_members,
-        calibrator,
-    )
+    if meta_stacking_enabled and meta_stacking_model is not None:
+
+        def _predict_full(_X: np.ndarray) -> np.ndarray:
+            Z, _ = build_meta_design_matrix(
+                _X,
+                arch_bagging_members or None,
+                logreg_bagging_members or None,
+                forest_bagging_members or None,
+            )
+            return predict_meta_stacking_scores(meta_stacking_model, Z)
+
+    else:
+        _predict_full = _make_predict_full(
+            model, ensemble_members,
+            arch_bagging_members, logreg_bagging_members,
+            calibrator,
+            forest_bagging_members=forest_bagging_members,
+        )
 
     score_nn_full = _predict_full(X)
     score_h_full = np.array(
@@ -204,6 +238,15 @@ def export_pipeline_bundle(
         save_architecture_bagging(arch_bagging_members, d_w / "ensemble_arch_bagging")
     if logreg_bagging_members:
         save_logreg_bagging(logreg_bagging_members, d_w / "ensemble_logreg")
+    if forest_bagging_members:
+        save_forest_bagging(forest_bagging_members, d_w / "ensemble_forest")
+    if meta_stacking_enabled and meta_stacking_model is not None:
+        save_meta_stacking_bundle(
+            meta_stacking_model,
+            list(stacking_meta_cols or []),
+            int(X.shape[1]),
+            d_w / "meta_stacking",
+        )
 
     X_train, y_train = splits["train"]
     X_val, y_val = splits["val"]
@@ -239,6 +282,11 @@ def export_pipeline_bundle(
         state_dict=model.state_dict(),
         embedding_used=preproc.config.use_embeddings,
     )
+    cfg_dict["bagging_config"] = {
+        "include_mlp": bool(bagging_include_mlp),
+        "include_logreg": bool(bagging_include_logreg),
+        "include_forest": bool(bagging_include_forest),
+    }
     if arch_bagging_members:
         cfg_dict["architecture_bagging"] = {
             "enabled": True,
@@ -253,12 +301,49 @@ def export_pipeline_bundle(
             "members": [m.key for m in logreg_bagging_members],
             "artifact_dir": "weights/ensemble_logreg",
         }
-    if arch_bagging_members or logreg_bagging_members:
+    if forest_bagging_members:
+        cfg_dict["forest_bagging"] = {
+            "enabled": True,
+            "aggregation": "mean",
+            "members": [
+                {"key": m.key, "family": getattr(m, "family", "rf")}
+                for m in forest_bagging_members
+            ],
+            "artifact_dir": "weights/ensemble_forest",
+        }
+    if (
+        arch_bagging_members
+        or logreg_bagging_members
+        or forest_bagging_members
+    ):
+        n_rf = sum(
+            1 for m in (forest_bagging_members or [])
+            if getattr(m, "family", "rf") == "rf"
+        )
+        n_et = sum(
+            1 for m in (forest_bagging_members or [])
+            if getattr(m, "family", "rf") == "extratrees"
+        )
         cfg_dict["hybrid_bagging"] = {
             "enabled": True,
             "n_mlp": int(len(arch_bagging_members or [])),
             "n_logreg": int(len(logreg_bagging_members or [])),
+            "n_forest": int(len(forest_bagging_members or [])),
+            "n_rf": int(n_rf),
+            "n_extratrees": int(n_et),
             "aggregation": "mean_calibrated",
+            "final_aggregation": (
+                "meta_mlp"
+                if meta_stacking_enabled and meta_stacking_model is not None
+                else "mean_calibrated"
+            ),
+        }
+    if meta_stacking_enabled and meta_stacking_model is not None:
+        cfg_dict["meta_stacking"] = {
+            "enabled": True,
+            "artifact_dir": "weights/meta_stacking",
+            "context_dim": int(X.shape[1]),
+            "n_pred_cols": len(stacking_meta_cols or []),
         }
     save_model_config(cfg_dict, d_cfg / "brand_similarity_model_config.json")
 
@@ -286,13 +371,31 @@ def export_pipeline_bundle(
         imp_val_sample_n = int(sample_n)
         imp_n_repeats_used = 3
         idx = rng.choice(len(y_val), size=sample_n, replace=False)
-        if arch_bagging_members or logreg_bagging_members:
+        if meta_stacking_enabled and meta_stacking_model is not None:
+            imp = permutation_importance_stacking_context(
+                meta_stacking_model,
+                arch_bagging_members or None,
+                logreg_bagging_members or None,
+                forest_bagging_members or None,
+                X_val[idx],
+                y_val[idx],
+                int(X.shape[1]),
+                names,
+                metric="pr_auc",
+                n_repeats=imp_n_repeats_used,
+            )
+        elif (
+            arch_bagging_members
+            or logreg_bagging_members
+            or forest_bagging_members
+        ):
             imp = permutation_importance_hybrid(
                 arch_bagging_members,
                 logreg_bagging_members,
                 X_val[idx],
                 y_val[idx],
                 names,
+                forest_members=forest_bagging_members or None,
                 metric="pr_auc",
                 n_repeats=imp_n_repeats_used,
             )
@@ -310,7 +413,10 @@ def export_pipeline_bundle(
             n_repeats=imp_n_repeats_used if imp_computed_here else -1,
             metric="pr_auc",
             arch_bagging=bool(
-                arch_bagging_members or logreg_bagging_members
+                (meta_stacking_enabled and meta_stacking_model is not None)
+                or arch_bagging_members
+                or logreg_bagging_members
+                or forest_bagging_members
             ),
         )
     else:
@@ -448,7 +554,13 @@ def mirror_latest_to_artifacts(project_root: Path, dirs: dict[str, Path]) -> Non
         if src.exists():
             shutil.copy2(src, dst)
 
-    for name in ("ensemble", "ensemble_arch_bagging", "ensemble_logreg"):
+    for name in (
+        "ensemble",
+        "ensemble_arch_bagging",
+        "ensemble_logreg",
+        "ensemble_forest",
+        "meta_stacking",
+    ):
         src_dir = d_w / name
         dst_dir = art / name
         if src_dir.exists():
@@ -478,6 +590,8 @@ def collect_download_files(dirs: dict[str, Path]) -> list[Path]:
         dirs["weights"] / "ensemble" / "ensemble_index.json",
         dirs["weights"] / "ensemble_arch_bagging" / "index.json",
         dirs["weights"] / "ensemble_logreg" / "index.json",
+        dirs["weights"] / "ensemble_forest" / "index.json",
+        dirs["weights"] / "meta_stacking" / "meta_stacking.json",
     ]
     return [p for p in candidates if p.exists()]
 

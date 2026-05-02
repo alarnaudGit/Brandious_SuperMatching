@@ -22,6 +22,7 @@ from ..normalize import (
     get_sorted_char_similarity,
     remove_repeated_chars,
 )
+from .brand_token_overlap import brand_cross_token_overlap_features
 from .tokens import (
     avg_max_phonetic_token,
     char_ngrams,
@@ -227,6 +228,7 @@ def build_nominal_features(m1: str, m2: str) -> dict[str, float]:
     out.update(graphical_features(a_norm, b_norm))
     out.update(phonetic_features(a_norm, b_norm))
     out.update(token_set_metrics(a_norm, b_norm))
+    out.update(brand_cross_token_overlap_features(m1 or "", m2 or ""))
     out.update(ofta_token_metrics(a_norm, b_norm))
     out.update(numeral_features(m1 or "", m2 or ""))
     out.update(ofta_features(m1 or "", m2 or ""))

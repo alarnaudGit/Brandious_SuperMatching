@@ -57,16 +57,26 @@ from src.model.explain import (  # noqa: E402
     integrated_gradients_for_row,
     integrated_gradients_hybrid_row,
     permutation_importance,
-    permutation_importance_arch_bagging,
     permutation_importance_hybrid,
     predict_hybrid_bagging,
     predict_hybrid_bagging_components,
+)
+from src.model.forest_bagging import (  # noqa: E402
+    ForestRandomRanges,
+    train_random_forest_bagging,
 )
 from src.model.logreg_bagging import (  # noqa: E402
     LogRegRandomRanges,
     train_random_logreg_bagging,
 )
 from src.model.mlp import MLPConfig  # noqa: E402
+from src.model.stacking_meta import (  # noqa: E402
+    MetaStackingTrainConfig,
+    build_meta_design_matrix,
+    permutation_importance_stacking_context,
+    predict_meta_stacking_scores,
+    train_meta_stacking_mlp,
+)
 from src.model.train import TrainConfig  # noqa: E402
 from src.normalize import calcular_score_complexo, calcular_similaridade_ofta  # noqa: E402
 from src.pipeline_storage import (  # noqa: E402
@@ -77,6 +87,12 @@ from src.pipeline_storage import (  # noqa: E402
     mirror_latest_to_artifacts,
     new_pipeline_run_id,
     prepare_run_directories,
+)
+from src.pipeline.enrichment_cache import (  # noqa: E402
+    EnrichmentCacheError,
+    cache_summary_line,
+    load_last_enrichment,
+    save_last_enrichment,
 )
 from src.pipeline.preprocessor import (  # noqa: E402
     BERTIMBAU_BASE_STS,
@@ -121,7 +137,14 @@ def _init_session_state() -> None:
         "ensemble_members": None,
         "arch_bagging_members": None,
         "logreg_bagging_members": None,
+        "forest_bagging_members": None,
         "calibrator": None,
+        "use_meta_stacking": False,
+        "meta_stacking_model": None,
+        "stacking_meta_cols": None,
+        "bagging_include_mlp": None,
+        "bagging_include_logreg": None,
+        "bagging_include_forest": None,
         "arch_config_dict": None,
         "pipeline_run_id": None,
         "pipeline_run_dir": None,
@@ -286,20 +309,91 @@ def render_sidebar() -> dict[str, Any]:
         tfidf_char_max = st.number_input("TF-IDF char max_features", 1000, 50_000, 12_000, step=1000)
 
     with st.sidebar.expander(
-        "Tamanho do bagging (MLPs + Logisticas)", expanded=True,
+        "Tamanho do bagging (familias opcionais)", expanded=True,
     ):
+        bagging_include_mlp = st.checkbox(
+            "Incluir MLPs",
+            value=True,
+            help="Quando desmarcado, nenhuma rede neural sera treinada neste run.",
+        )
+        bagging_include_logreg = st.checkbox(
+            "Incluir regressoes logisticas",
+            value=False,
+        )
+        bagging_include_forest = st.checkbox(
+            "Incluir florestas (RF / ExtraTrees)",
+            value=False,
+        )
+        n_active_families = sum(
+            [
+                bool(bagging_include_mlp),
+                bool(bagging_include_logreg),
+                bool(bagging_include_forest),
+            ]
+        )
         n_per_kind = st.slider(
-            "Modelos por tipo (N)",
+            "Modelos por familia ativa (N)",
             min_value=1, max_value=100, value=3, step=1,
             help=(
-                "O bagging final tera **2 X N modelos**: N MLPs + N "
-                "regressoes logisticas. O score por par e' a media "
-                "calibrada Platt de todos os 2N modelos."
+                "Para cada familia marcada acima, treina-se N modelos. "
+                "Total de membros base = N multiplicado pelo numero de familias "
+                "ativas. Com stacking ligado, o score final sai da meta-MLP; "
+                "caso contrario, usa-se a media das probabilidades calibradas."
             ),
         )
+        total_members = int(n_per_kind) * int(n_active_families)
+        _fam_parts: list[str] = []
+        if bagging_include_mlp:
+            _fam_parts.append(f"{int(n_per_kind)} MLPs")
+        if bagging_include_logreg:
+            _fam_parts.append(f"{int(n_per_kind)} logisticas")
+        if bagging_include_forest:
+            _fam_parts.append(f"{int(n_per_kind)} florestas")
+        _fam_txt = " + ".join(_fam_parts) if _fam_parts else "(nenhuma familia)"
         st.caption(
-            f"Total de modelos no bagging: **{int(n_per_kind) * 2}** "
-            f"({int(n_per_kind)} MLPs + {int(n_per_kind)} log\u00edsticas)."
+            f"Familias ativas: **{n_active_families}**. Total de modelos base: "
+            f"**{total_members}** ({_fam_txt}). "
+            "Marque pelo menos uma familia antes de treinar."
+        )
+        st.caption(
+            "Se voce adicionou novas features nominais (ex.: overlap de tokens), "
+            "regenere a matriz na **aba 2** para evitar dimensao inconsistente."
+        )
+
+    with st.sidebar.expander("Stacking (meta-MLP)", expanded=False):
+        use_meta_stacking = st.checkbox(
+            "Stacking (meta-MLP sobre contexto + preds do bagging)",
+            value=False,
+            help=(
+                "Treina uma MLP final **somente no conjunto de validacao**, "
+                "com entrada = vetor de features escaladas concatenado com as "
+                "probabilidades calibradas dos membros base. Padrao OFF: "
+                "agregacao por media simples."
+            ),
+        )
+        meta_hidden_str = st.text_input(
+            "Camadas ocultas da meta-MLP (virgulas)",
+            value="64,32",
+            disabled=not use_meta_stacking,
+        )
+        meta_dropout = st.slider(
+            "Dropout (meta)", 0.0, 0.6, 0.25, 0.05,
+            disabled=not use_meta_stacking,
+        )
+        col_me1, col_me2 = st.columns(2)
+        meta_epochs = col_me1.number_input(
+            "Epochs max (meta)", 10, 300, 80, 10,
+            disabled=not use_meta_stacking,
+        )
+        meta_es_patience = col_me2.number_input(
+            "Early stop patience (meta)", 3, 40, 12, 1,
+            disabled=not use_meta_stacking,
+        )
+        meta_lr = st.select_slider(
+            "Learning rate (meta)",
+            options=[3e-4, 1e-3, 3e-3],
+            value=1e-3,
+            disabled=not use_meta_stacking,
         )
 
     with st.sidebar.expander(
@@ -389,6 +483,80 @@ def render_sidebar() -> dict[str, Any]:
             min_value=200, max_value=10_000, value=2000, step=200,
         )
 
+    with st.sidebar.expander(
+        "Bagging - Parametros das Florestas (sorteio)", expanded=False,
+    ):
+        rf_family_choices = st.multiselect(
+            "Familias de arvore",
+            options=["rf", "extratrees"],
+            default=["rf", "extratrees"],
+            help=(
+                "`rf`: RandomForest (bootstrap interno). "
+                "`extratrees`: ExtraTrees (sem bootstrap, splits aleatorios)."
+            ),
+        )
+        col_ne1, col_ne2 = st.columns(2)
+        rf_n_est_min = col_ne1.number_input(
+            "n_estimators min",
+            min_value=10, max_value=2000, value=100, step=10,
+        )
+        rf_n_est_max = col_ne2.number_input(
+            "n_estimators max",
+            min_value=10, max_value=4000, value=400, step=10,
+        )
+        rf_max_depth_str = st.text_input(
+            "max_depth (escolhas, use 'none' para sem limite)",
+            value="none,8,16,24",
+            help=(
+                "Lista vir-separada. Cada modelo sorteia uma profundidade. "
+                "'none' = arvore cresce ate folhas puras."
+            ),
+        )
+        col_msl1, col_msl2 = st.columns(2)
+        rf_msl_min = col_msl1.number_input(
+            "min_samples_leaf min",
+            min_value=1, max_value=50, value=1, step=1,
+        )
+        rf_msl_max = col_msl2.number_input(
+            "min_samples_leaf max",
+            min_value=1, max_value=50, value=8, step=1,
+        )
+        rf_max_features_choices = st.multiselect(
+            "max_features (escolhas)",
+            options=["sqrt", "log2", "0.3", "0.5", "0.7", "1.0"],
+            default=["sqrt", "log2", "0.5"],
+            help=(
+                "`sqrt`/`log2` ou fracao da quantidade de features para cada "
+                "split. Cada modelo sorteia um valor."
+            ),
+        )
+        rf_cw_choices = st.multiselect(
+            "class_weight",
+            options=["none", "balanced", "balanced_subsample"],
+            default=["none", "balanced", "balanced_subsample"],
+            help=(
+                "`balanced`/`balanced_subsample` aumentam peso da classe "
+                "minoritaria automaticamente."
+            ),
+        )
+        rf_max_samples = st.slider(
+            "max_samples (fracao do treino, RF apenas)",
+            min_value=0.3, max_value=1.0, value=1.0, step=0.05,
+            help=(
+                "Fracao do treino balanceado usada por arvore (so afeta RF; "
+                "ExtraTrees nao usa bootstrap interno). 1.0 = sem limite."
+            ),
+        )
+        rf_use_bootstrap_ext = st.checkbox(
+            "Bootstrap externo por modelo (alem do interno)",
+            value=False,
+            help=(
+                "Quando ligado, cada floresta treina sobre uma amostra com "
+                "reposicao do treino balanceado, alem do bootstrap interno "
+                "do sklearn."
+            ),
+        )
+
     with st.sidebar.expander("Treino (otimizacao)", expanded=True):
         epochs = st.slider("Epochs maximas (cada MLP)", 5, 200, 60)
         es_patience = st.slider(
@@ -450,9 +618,10 @@ def render_sidebar() -> dict[str, Any]:
 
     with st.sidebar.expander("Calibracao", expanded=False):
         st.caption(
-            "No bagging de N MLPs, **cada modelo e' calibrado por Platt no "
-            "validation** automaticamente. O score final e' a media dos K "
-            "scores calibrados.",
+            "**Cada membro base** (MLP / logistica / floresta) e' calibrado por "
+            "Platt no validation. Sem stacking, o score final e' a **media** das "
+            "probabilidades calibradas. Com **stacking**, essas probabilidades "
+            "entram como colunas extras na meta-MLP (treinada so no validation).",
         )
 
     with st.sidebar.expander("Balanceamento", expanded=True):
@@ -549,6 +718,60 @@ def render_sidebar() -> dict[str, Any]:
         bootstrap_train=bool(lr_use_bootstrap),
     )
 
+    # Florestas: parsing dos campos do sidebar.
+    forest_family_pool = tuple(rf_family_choices) or ("rf", "extratrees")
+
+    forest_max_depth_pool: list[Any] = []
+    for tok in (rf_max_depth_str or "").split(","):
+        t = tok.strip().lower()
+        if not t:
+            continue
+        if t in {"none", "null", "0"}:
+            forest_max_depth_pool.append(None)
+        else:
+            try:
+                forest_max_depth_pool.append(int(t))
+            except ValueError:
+                continue
+    if not forest_max_depth_pool:
+        forest_max_depth_pool = [None, 8, 16, 24]
+
+    forest_max_features_pool: list[Any] = []
+    for tok in rf_max_features_choices:
+        if tok in ("sqrt", "log2"):
+            forest_max_features_pool.append(tok)
+        else:
+            try:
+                forest_max_features_pool.append(float(tok))
+            except ValueError:
+                continue
+    if not forest_max_features_pool:
+        forest_max_features_pool = ["sqrt", "log2", 0.5]
+
+    forest_cw_pool: list[str | None] = []
+    for cw in rf_cw_choices:
+        if isinstance(cw, str) and cw.lower() == "none":
+            forest_cw_pool.append(None)
+        else:
+            forest_cw_pool.append(str(cw))
+    if not forest_cw_pool:
+        forest_cw_pool = [None]
+
+    forest_ranges = ForestRandomRanges(
+        family_choices=forest_family_pool,
+        n_estimators_min=int(rf_n_est_min),
+        n_estimators_max=int(max(rf_n_est_max, rf_n_est_min)),
+        max_depth_choices=tuple(forest_max_depth_pool),
+        min_samples_leaf_min=int(rf_msl_min),
+        min_samples_leaf_max=int(max(rf_msl_max, rf_msl_min)),
+        max_features_choices=tuple(forest_max_features_pool),
+        class_weight_choices=tuple(forest_cw_pool),
+        max_samples_fraction=float(rf_max_samples),
+        bootstrap_train=bool(rf_use_bootstrap_ext),
+        bootstrap_fraction=1.0,
+        n_jobs=-1,
+    )
+
     return {
         "preproc_cfg": PreprocessorConfig(
             tfidf_word_max_features=int(tfidf_word_max),
@@ -562,6 +785,7 @@ def render_sidebar() -> dict[str, Any]:
         "n_per_kind": int(n_per_kind),
         "mlp_ranges": mlp_ranges,
         "logreg_ranges": logreg_ranges,
+        "forest_ranges": forest_ranges,
         "epochs": int(epochs),
         "es_patience": int(es_patience),
         "loss_name": str(loss_value),
@@ -580,6 +804,15 @@ def render_sidebar() -> dict[str, Any]:
         "seed": int(seed),
         "test_size": float(test_size),
         "val_size": float(val_size),
+        "bagging_include_mlp": bool(bagging_include_mlp),
+        "bagging_include_logreg": bool(bagging_include_logreg),
+        "bagging_include_forest": bool(bagging_include_forest),
+        "use_meta_stacking": bool(use_meta_stacking),
+        "meta_stacking_hidden_dims_str": str(meta_hidden_str),
+        "meta_stacking_dropout": float(meta_dropout),
+        "meta_stacking_epochs": int(meta_epochs),
+        "meta_stacking_es_patience": int(meta_es_patience),
+        "meta_stacking_lr": float(meta_lr),
     }
 
 
@@ -605,11 +838,19 @@ def _reset_downstream_pipeline_state() -> None:
         "ensemble_members",
         "arch_bagging_members",
         "logreg_bagging_members",
+        "forest_bagging_members",
         "calibrator",
+        "use_meta_stacking",
+        "meta_stacking_model",
+        "stacking_meta_cols",
+        "bagging_include_mlp",
+        "bagging_include_logreg",
+        "bagging_include_forest",
         "pipeline_run_id",
         "pipeline_run_dir",
     ):
         st.session_state[k] = None if k != "history" else []
+    st.session_state.use_meta_stacking = False
     st.session_state.threshold_optimal = 0.5
     st.session_state.stop_train = False
     st.session_state.step_status = {}
@@ -695,22 +936,157 @@ def _run_feature_enrichment(
     st.session_state.preproc_cfg_signature = _preproc_cfg_signature(cfg)
 
 
-def _get_bagging_lists() -> tuple[list[Any], list[Any]]:
-    """Devolve (mlp_members, logreg_members) do session_state (sempre listas)."""
+def _apply_restored_enrichment_session(
+    preproc: FeaturePreprocessor,
+    X: np.ndarray,
+    names: list[str],
+    sig: dict[str, Any],
+) -> None:
+    st.session_state.preprocessor = preproc
+    st.session_state.feature_matrix = X
+    st.session_state.feature_names = list(names)
+    st.session_state.preproc_cfg_signature = dict(sig)
+    _set_step_status("enrichment", "ok")
+
+
+def _validate_training_enrichment_alignment(cfg: dict[str, Any]) -> bool:
+    """Garante que X, preprocessador, dataset e sidebar estao alinhados antes do treino."""
+    df = st.session_state.get("df")
+    X = st.session_state.get("feature_matrix")
+    preproc: FeaturePreprocessor | None = st.session_state.get("preprocessor")
+    names = st.session_state.get("feature_names")
+
+    if df is None or X is None:
+        st.error(
+            "Dataset ou matriz de features ausente. Use a **aba 1** para carregar os "
+            "dados e a **aba 2** para gerar features (ou restaurar o cache compativel)."
+        )
+        return False
+
+    if LABEL_COLUMN_CANON not in df.columns:
+        st.error(
+            f"Coluna **{LABEL_COLUMN_CANON}** ausente no DataFrame. Verifique o arquivo."
+        )
+        return False
+
+    if len(df) != X.shape[0]:
+        st.error(
+            f"Incompatibilidade entre dataset e matriz: o DataFrame tem **{len(df):,}** "
+            f"linhas, mas a matriz tem **{X.shape[0]:,}** linhas.\n\n"
+            "Isso costuma ocorrer ao **trocar de arquivo** sem regerar o enriquecimento, "
+            "ou ao misturar sessoes. Solucao: na **aba 2**, clique em **Gerar features** "
+            "ou em **Restaurar ultimo enriquecimento do disco** apenas se for o **mesmo** "
+            "Excel (mesmo hash)."
+        )
+        return False
+
+    if preproc is None:
+        st.error(
+            "Pre-processador ausente na sessao (estado inconsistente). "
+            "Execute o enriquecimento na **aba 2**."
+        )
+        return False
+
+    fn_ordered = list(preproc.feature_names_ordered)
+    if names is not None and list(names) != fn_ordered:
+        st.error(
+            "Incompatibilidade: a lista de nomes de features na sessao difere do "
+            "pre-processador. Recarregue o enriquecimento na **aba 2**."
+        )
+        return False
+
+    if X.shape[1] != len(fn_ordered):
+        st.error(
+            f"Incompatibilidade: a matriz tem **{X.shape[1]}** colunas, mas o "
+            f"pre-processador define **{len(fn_ordered)}** features.\n\n"
+            "Regenere o enriquecimento na **aba 2**."
+        )
+        return False
+
+    sig_used = st.session_state.get("preproc_cfg_signature")
+    sig_now = _preproc_cfg_signature(cfg)
+    if not sig_used:
+        st.error(
+            "Nao ha registro da configuracao do preprocessador para esta matriz "
+            "(assinatura ausente). Va na **aba 2** e execute **Gerar features**."
+        )
+        return False
+
+    if sig_now != sig_used:
+        diffs = _diff_preproc_signatures(sig_used, sig_now)
+        lines = "\n".join(
+            f"- **{label}**: `{ov}` -> `{nv}`" for label, ov, nv in diffs
+        )
+        if not lines:
+            lines = (
+                "(Ha diferenca na assinatura; compare TF-IDF, embeddings, top-K classes "
+                "e limiar de tokens genericos no sidebar.)"
+            )
+        st.error(
+            "Incompatibilidade: os parametros do **pre-processador no sidebar** nao "
+            "coincidem com os usados para gerar a matriz atual.\n\n"
+            f"Diferencas:\n{lines}\n\n"
+            "**Opcoes:** regenere as features na **aba 2**, ou ajuste o sidebar para "
+            "igualar o ultimo enriquecimento gravado / restaurado."
+        )
+        return False
+
+    return True
+
+
+def _get_bagging_lists() -> tuple[list[Any], list[Any], list[Any]]:
+    """Devolve (mlps, logregs, florestas) do session_state (sempre listas)."""
     mlps = st.session_state.get("arch_bagging_members") or []
     lrs = st.session_state.get("logreg_bagging_members") or []
-    return list(mlps), list(lrs)
+    rfs = st.session_state.get("forest_bagging_members") or []
+    return list(mlps), list(lrs), list(rfs)
 
 
 def _has_hybrid_bagging() -> bool:
-    mlps, lrs = _get_bagging_lists()
-    return bool(mlps) or bool(lrs)
+    mlps, lrs, rfs = _get_bagging_lists()
+    return bool(mlps) or bool(lrs) or bool(rfs)
 
 
 def _hybrid_predict(X: np.ndarray) -> np.ndarray:
-    """Score agregado do bagging hibrido (MLPs + LogRegs)."""
-    mlps, lrs = _get_bagging_lists()
-    return predict_hybrid_bagging(mlps, lrs, X, apply_calibration=True)
+    """Score agregado do bagging hibrido (MLPs + LogRegs + Florestas)."""
+    mlps, lrs, rfs = _get_bagging_lists()
+    return predict_hybrid_bagging(
+        mlps, lrs, X,
+        forest_members=rfs or None,
+        apply_calibration=True,
+    )
+
+
+def _session_predict_scores(X: np.ndarray) -> np.ndarray:
+    """Score final respeitando stacking (meta-MLP) quando ativo na sessao."""
+    mlps, lrs, rfs = _get_bagging_lists()
+    meta_mod = st.session_state.get("meta_stacking_model")
+    if (
+        bool(st.session_state.get("use_meta_stacking"))
+        and meta_mod is not None
+        and (mlps or lrs or rfs)
+    ):
+        Z, _ = build_meta_design_matrix(
+            X,
+            mlps or None,
+            lrs or None,
+            rfs or None,
+        )
+        return predict_meta_stacking_scores(meta_mod, Z)
+    if mlps or lrs or rfs:
+        return predict_hybrid_bagging(
+            mlps, lrs, X,
+            forest_members=rfs or None,
+            apply_calibration=True,
+        )
+    model = st.session_state.get("model")
+    calibrator = st.session_state.get("calibrator")
+    if model is None:
+        raise ValueError("Nenhum modelo ou bagging disponivel para pontuar.")
+    s = predict_scores(model, X)
+    if calibrator is not None and calibrator.fitted:
+        s = calibrator.transform(s)
+    return s
 
 
 def _execute_training_evaluation_export(
@@ -725,11 +1101,11 @@ def _execute_training_evaluation_export(
     metricas de teste e exportacao automatica do bundle."""
     from sklearn.model_selection import train_test_split as _tts
 
+    if not _validate_training_enrichment_alignment(cfg):
+        return
+
     df = st.session_state.get("df")
     X = st.session_state.get("feature_matrix")
-    if df is None or X is None:
-        st.error("Dataset ou matriz de features ausente.")
-        return
 
     y = df[LABEL_COLUMN_CANON].to_numpy().astype(np.int64)
     split_cfg = SplitConfig(
@@ -761,6 +1137,27 @@ def _execute_training_evaluation_export(
         hard_neg_mining=cfg.get("hard_neg_mining", False),
         symmetry_aug=cfg.get("symmetry_aug", False),
     )
+
+    inc_mlp = bool(cfg.get("bagging_include_mlp", True))
+    inc_lr = bool(cfg.get("bagging_include_logreg", False))
+    inc_rf = bool(cfg.get("bagging_include_forest", False))
+    if not (inc_mlp or inc_lr or inc_rf):
+        st.error(
+            "Marque pelo menos uma familia no bagging (MLPs, logisticas ou "
+            "florestas) no sidebar."
+        )
+        return
+
+    st.session_state.use_meta_stacking = False
+    st.session_state.meta_stacking_model = None
+    st.session_state.stacking_meta_cols = None
+
+    def _parse_hidden_dims(s: str, fb: list[int]) -> list[int]:
+        try:
+            out = [int(x.strip()) for x in str(s).split(",") if x.strip()]
+            return out or fb
+        except ValueError:
+            return fb
 
     st.session_state.stop_train = False
     all_idx = np.arange(len(y))
@@ -802,6 +1199,9 @@ def _execute_training_evaluation_export(
     lr_ranges: LogRegRandomRanges = (
         cfg.get("logreg_ranges") or LogRegRandomRanges()
     )
+    rf_ranges: ForestRandomRanges = (
+        cfg.get("forest_ranges") or ForestRandomRanges()
+    )
 
     def _on_variant_start_mlp(key: str, i: int, total: int) -> None:
         if on_variant_start is None:
@@ -819,46 +1219,93 @@ def _execute_training_evaluation_export(
         except TypeError:
             on_variant_start(key, i, total)
 
-    with st.spinner(
-        f"Treinando bagging hibrido: {n_models} MLPs + {n_models} "
-        f"regressoes logisticas (score final = media calibrada)..."
-    ):
-        members_ab = train_random_mlp_bagging(
-            X_train, y_train, X_val, y_val,
-            train_cfg, bal, list(feature_names_local),
-            n_models=n_models,
-            ranges=ranges,
-            base_seed=int(cfg["seed"]),
-            calibrate=True,
-            on_variant_start=_on_variant_start_mlp,
-            on_epoch_end=epoch_cb,
-            should_stop=lambda: bool(st.session_state.stop_train),
+    def _on_variant_start_rf(
+        key: str, family: str, i: int, total: int,
+    ) -> None:
+        if on_variant_start is None:
+            return
+        kind = "extratrees" if family == "extratrees" else "rf"
+        try:
+            on_variant_start(key, i, total, kind)
+        except TypeError:
+            on_variant_start(key, i, total)
+
+    spin_parts: list[str] = []
+    if inc_mlp:
+        spin_parts.append(f"{n_models} MLPs")
+    if inc_lr:
+        spin_parts.append(f"{n_models} regressoes logisticas")
+    if inc_rf:
+        spin_parts.append(f"{n_models} florestas (RF/ExtraTrees)")
+    spin_txt = " + ".join(spin_parts) if spin_parts else "nenhuma familia"
+    want_stack = bool(cfg.get("use_meta_stacking", False))
+    stack_note = (
+        "; depois meta-MLP no conjunto de validacao (stacking)"
+        if want_stack
+        else "; score final = media das probabilidades calibradas"
+    )
+    with st.spinner(f"Treinando bagging ({spin_txt}){stack_note}..."):
+        members_ab = (
+            train_random_mlp_bagging(
+                X_train, y_train, X_val, y_val,
+                train_cfg, bal, list(feature_names_local),
+                n_models=n_models,
+                ranges=ranges,
+                base_seed=int(cfg["seed"]),
+                calibrate=True,
+                on_variant_start=_on_variant_start_mlp,
+                on_epoch_end=epoch_cb,
+                should_stop=lambda: bool(st.session_state.stop_train),
+            )
+            if inc_mlp
+            else []
         )
-        members_lr = train_random_logreg_bagging(
-            X_train, y_train, X_val, y_val,
-            bal, list(feature_names_local),
-            n_models=n_models,
-            ranges=lr_ranges,
-            base_seed=int(cfg["seed"]),
-            calibrate=True,
-            on_variant_start=_on_variant_start_lr,
-            should_stop=lambda: bool(st.session_state.stop_train),
+        members_lr = (
+            train_random_logreg_bagging(
+                X_train, y_train, X_val, y_val,
+                bal, list(feature_names_local),
+                n_models=n_models,
+                ranges=lr_ranges,
+                base_seed=int(cfg["seed"]),
+                calibrate=True,
+                on_variant_start=_on_variant_start_lr,
+                should_stop=lambda: bool(st.session_state.stop_train),
+            )
+            if inc_lr
+            else []
         )
-    if not members_ab and not members_lr:
+        members_rf = (
+            train_random_forest_bagging(
+                X_train, y_train, X_val, y_val,
+                bal, list(feature_names_local),
+                n_models=n_models,
+                ranges=rf_ranges,
+                base_seed=int(cfg["seed"]),
+                calibrate=True,
+                on_variant_start=_on_variant_start_rf,
+                should_stop=lambda: bool(st.session_state.stop_train),
+            )
+            if inc_rf
+            else []
+        )
+    if not members_ab and not members_lr and not members_rf:
         st.error(
-            "Bagging hibrido nao completou nenhum modelo "
-            "(MLPs e Logisticas falharam)."
+            "O bagging nao completou nenhum modelo nas familias selecionadas."
         )
         return
-    if not members_ab:
+    if inc_mlp and not members_ab:
         st.warning(
-            "Nenhuma MLP foi treinada com sucesso; bagging usara apenas as "
-            "regressoes logisticas."
+            "Nenhuma MLP foi treinada com sucesso (familia solicitada)."
         )
-    if not members_lr:
+    if inc_lr and not members_lr:
         st.warning(
-            "Nenhuma regressao logistica foi treinada com sucesso; bagging "
-            "usara apenas as MLPs."
+            "Nenhuma regressao logistica foi treinada com sucesso "
+            "(familia solicitada)."
+        )
+    if inc_rf and not members_rf:
+        st.warning(
+            "Nenhuma floresta (RF/ExtraTrees) foi treinada com sucesso "
+            "(familia solicitada)."
         )
 
     if members_ab:
@@ -873,7 +1320,8 @@ def _execute_training_evaluation_export(
         )
     mlp_pr_vals = [m.best_pr_auc_val for m in members_ab] if members_ab else []
     lr_pr_vals = [m.train_metric_val for m in members_lr] if members_lr else []
-    all_pr = mlp_pr_vals + lr_pr_vals
+    rf_pr_vals = [m.train_metric_val for m in members_rf] if members_rf else []
+    all_pr = mlp_pr_vals + lr_pr_vals + rf_pr_vals
     mean_pr = float(np.mean(all_pr)) if all_pr else 0.0
     last_epoch = (
         int(members_ab[-1].best_epoch) if members_ab else 0
@@ -894,6 +1342,7 @@ def _execute_training_evaluation_export(
 
     st.session_state.arch_bagging_members = members_ab
     st.session_state.logreg_bagging_members = members_lr
+    st.session_state.forest_bagging_members = members_rf
     st.session_state.ensemble_members = None
     st.session_state.calibrator = None
     st.session_state.model = model
@@ -916,20 +1365,87 @@ def _execute_training_evaluation_export(
     else:
         st.session_state.mlp_cfg = MLPConfig(input_dim=X.shape[1])
 
-    val_scores = predict_hybrid_bagging(
-        members_ab, members_lr, X_val, apply_calibration=True,
-    )
+    stacking_ok = False
+    if want_stack and (members_ab or members_lr or members_rf):
+        try:
+            Z_val_tr, meta_cols = build_meta_design_matrix(
+                X_val,
+                members_ab or None,
+                members_lr or None,
+                members_rf or None,
+            )
+            hid = _parse_hidden_dims(
+                str(cfg.get("meta_stacking_hidden_dims_str", "64,32")),
+                [64, 32],
+            )
+            meta_cfg = MetaStackingTrainConfig(
+                hidden_dims=hid,
+                dropout=float(cfg.get("meta_stacking_dropout", 0.25)),
+                epochs=int(cfg.get("meta_stacking_epochs", 80)),
+                lr=float(cfg.get("meta_stacking_lr", 1e-3)),
+                early_stopping_patience=int(
+                    cfg.get("meta_stacking_es_patience", 12),
+                ),
+                seed=int(cfg["seed"]),
+            )
+            meta_model, _mtr = train_meta_stacking_mlp(
+                Z_val_tr,
+                y_val.astype(np.float32),
+                config=meta_cfg,
+            )
+            st.session_state.meta_stacking_model = meta_model
+            st.session_state.use_meta_stacking = True
+            st.session_state.stacking_meta_cols = meta_cols
+            stacking_ok = True
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Meta-stacking falhou: %s", exc)
+            st.warning(
+                f"Stacking falhou ({exc}); usando media simples das preds base."
+            )
+            st.session_state.use_meta_stacking = False
+            st.session_state.meta_stacking_model = None
+            st.session_state.stacking_meta_cols = None
+
+    if stacking_ok and st.session_state.get("meta_stacking_model") is not None:
+        meta_m = st.session_state.meta_stacking_model
+        Z_val, _ = build_meta_design_matrix(
+            X_val,
+            members_ab or None,
+            members_lr or None,
+            members_rf or None,
+        )
+        Z_test, _ = build_meta_design_matrix(
+            X_test,
+            members_ab or None,
+            members_lr or None,
+            members_rf or None,
+        )
+        val_scores = predict_meta_stacking_scores(meta_m, Z_val)
+        test_scores = predict_meta_stacking_scores(meta_m, Z_test)
+    else:
+        val_scores = predict_hybrid_bagging(
+            members_ab, members_lr, X_val,
+            forest_members=members_rf or None,
+            apply_calibration=True,
+        )
+        test_scores = predict_hybrid_bagging(
+            members_ab, members_lr, X_test,
+            forest_members=members_rf or None,
+            apply_calibration=True,
+        )
+
     thr_opt, thr_policy = find_optimal_threshold(
         y_val, val_scores, recall_floor=cfg["recall_floor"],
     )
     st.session_state.threshold_optimal = float(thr_opt)
     st.session_state.threshold_policy = thr_policy
 
-    test_scores = predict_hybrid_bagging(
-        members_ab, members_lr, X_test, apply_calibration=True,
-    )
     em = compute_metrics_at_threshold(y_test, test_scores, threshold=thr_opt)
     st.session_state.eval_metrics_test = em
+
+    st.session_state.bagging_include_mlp = inc_mlp
+    st.session_state.bagging_include_logreg = inc_lr
+    st.session_state.bagging_include_forest = inc_rf
 
     _export_ok = False
     try:
@@ -955,10 +1471,19 @@ def _execute_training_evaluation_export(
             logreg_bagging_members=st.session_state.get(
                 "logreg_bagging_members"
             ),
+            forest_bagging_members=st.session_state.get(
+                "forest_bagging_members"
+            ),
             calibrator=None,
             importance_top=st.session_state.get("importance_top"),
             auto_imp=True,
             progress_callback_enriched=None,
+            meta_stacking_model=st.session_state.get("meta_stacking_model"),
+            meta_stacking_enabled=bool(st.session_state.get("use_meta_stacking")),
+            stacking_meta_cols=st.session_state.get("stacking_meta_cols"),
+            bagging_include_mlp=inc_mlp,
+            bagging_include_logreg=inc_lr,
+            bagging_include_forest=inc_rf,
         )
         if _imp_top is not None:
             st.session_state.importance_top = _imp_top
@@ -977,11 +1502,17 @@ def _execute_training_evaluation_export(
         _pextra = " Aviso: exportacao automatica do pipeline falhou (ver logs)."
     else:
         _pextra = ""
+    _agg = (
+        "meta-MLP (stacking sobre contexto + preds base)"
+        if bool(st.session_state.get("use_meta_stacking"))
+        else "media das probabilidades calibradas (Platt por modelo base)"
+    )
     msg = (
-        f"Treino concluido (bagging hibrido: {len(members_ab)} MLPs + "
-        f"{len(members_lr)} regressoes logisticas, calibrado Platt por "
-        f"modelo). Epoca otima da ultima MLP: {result.best_epoch}, val "
-        f"PR-AUC medio (todos os modelos) = {result.best_pr_auc_val:.4f}. "
+        f"Treino concluido ({len(members_ab)} MLPs + "
+        f"{len(members_lr)} logisticas + {len(members_rf)} florestas; "
+        f"agregacao final: {_agg}). "
+        f"Epoca otima da ultima MLP: {result.best_epoch}, val PR-AUC medio "
+        f"(membros base) = {result.best_pr_auc_val:.4f}. "
         f"Threshold otimo (val) = {thr_opt:.3f}. Test PR-AUC = {em.pr_auc:.4f}, "
         f"Recall = {em.recall:.3f}.{_pextra}"
     )
@@ -1038,6 +1569,25 @@ def tab_upload_eda(cfg: dict[str, Any]) -> None:
                 st.session_state.df = df
                 st.session_state.df_report = report
                 _set_step_status("dataset", "ok")
+                msg_ok = "Dataset carregado com sucesso."
+                try:
+                    pre_r, x_r, nm_r, sg_r = load_last_enrichment(
+                        PROJECT_ROOT,
+                        df,
+                        dataset_hash=report.dataset_hash,
+                    )
+                    _apply_restored_enrichment_session(pre_r, x_r, nm_r, sg_r)
+                    msg_ok += (
+                        " **Matriz de features restaurada do cache local** "
+                        "(`artifacts/last_enrichment_session/`) — mesmo arquivo "
+                        "(hash) e dimensoes; pode ir direto ao treino se os parametros "
+                        "do sidebar nao mudaram desde o ultimo enriquecimento."
+                    )
+                except EnrichmentCacheError:
+                    logger.info(
+                        "Cache de enriquecimento nao aplicado apos carregar dataset.",
+                    )
+                st.success(msg_ok)
         except Exception as exc:  # noqa: BLE001
             _set_step_status("dataset", "error")
             logger.exception("Falha ao carregar dataset: %s", exc)
@@ -1086,12 +1636,46 @@ def tab_enrichment(cfg: dict[str, Any]) -> None:
         )
         return
 
+    cs = cache_summary_line(PROJECT_ROOT)
+    if cs:
+        st.caption(cs)
+    st.caption(
+        "O **ultimo enriquecimento bem-sucedido** e gravado automaticamente em "
+        "`artifacts/last_enrichment_session/` e **reaplicado ao carregar o mesmo "
+        "Excel** (mesmo SHA-256). Reiniciar o app nao apaga esse cache."
+    )
+
     st.write(
         "Fitta TF-IDF/embeddings e gera a matriz de features na ordem canonica. "
         "Os defaults do sidebar favorecem qualidade (BERTimbau-large, "
         "TF-IDF largo, Sprint 2 completo); esta etapa pode demorar varios "
         "minutos."
     )
+
+    if st.button(
+        "Restaurar ultimo enriquecimento do disco",
+        help=(
+            "Carrega preprocessor + matriz do cache local se forem compativeis "
+            "com o dataset atual (hash e numero de linhas)."
+        ),
+    ):
+        report_r: DatasetReport | None = st.session_state.get("df_report")
+        if report_r is None:
+            st.error("Relatorio do dataset ausente. Recarregue a aba 1.")
+        else:
+            try:
+                pre_r, x_r, nm_r, sg_r = load_last_enrichment(
+                    PROJECT_ROOT,
+                    df,
+                    dataset_hash=report_r.dataset_hash,
+                )
+                _apply_restored_enrichment_session(pre_r, x_r, nm_r, sg_r)
+                st.success(
+                    "Enriquecimento restaurado do disco. Confira se o aviso de "
+                    "**drift do sidebar** abaixo esta limpo antes de treinar.",
+                )
+            except EnrichmentCacheError as exc:
+                st.error(exc.user_message)
 
     drift = _render_preproc_drift_warning(cfg)
     if not drift and st.session_state.get("feature_matrix") is not None:
@@ -1123,6 +1707,39 @@ def tab_enrichment(cfg: dict[str, Any]) -> None:
                 f"{X.shape if X is not None else '?'}, "
                 f"{len(names)} features. Proxima etapa: aba **3. Treino**.",
             )
+            try:
+                report_sv: DatasetReport | None = st.session_state.get(
+                    "df_report",
+                )
+                pre_sv: FeaturePreprocessor | None = st.session_state.get(
+                    "preprocessor",
+                )
+                x_sv = st.session_state.get("feature_matrix")
+                if (
+                    report_sv is not None
+                    and pre_sv is not None
+                    and x_sv is not None
+                ):
+                    save_last_enrichment(
+                        PROJECT_ROOT,
+                        df,
+                        dataset_hash=report_sv.dataset_hash,
+                        preprocessor=pre_sv,
+                        X=x_sv,
+                        preproc_cfg_signature=_preproc_cfg_signature(cfg),
+                        app_version=str(__version__),
+                    )
+                    st.info(
+                        "Cache local atualizado: `artifacts/last_enrichment_session/`.",
+                    )
+            except Exception as cache_exc:  # noqa: BLE001
+                logger.warning(
+                    "Falha ao gravar cache de enriquecimento: %s", cache_exc,
+                )
+                st.warning(
+                    "Aviso: nao foi possivel gravar o cache local no disco "
+                    f"({cache_exc}). Verifique permissoes na pasta `artifacts/`.",
+                )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Enriquecimento falhou: %s", exc)
             st.error(f"Enriquecimento falhou: {exc}")
@@ -1278,14 +1895,14 @@ para errar menos.
 **Padroes atuais (qualidade > velocidade)**
 
 - Balanceamento **50/50** no treino (positivos com reposicao ate igualar negativos apos undersample).
-- **Bagging hibrido**: para o N escolhido no sidebar treina-se **N MLPs aleatorias + N regressoes logisticas aleatorias** (total = 2 X N modelos). Cada modelo e' calibrado por Platt no validation; o score final e' a **media das 2 X N probabilidades calibradas**.
-- MLPs sorteiam arquitetura, dropout, ativacao, lr, weight decay e batch size; logisticas sorteiam C, penalty (l1/l2) e class_weight (none/balanced).
+- **Bagging modular**: escolha no sidebar **quais familias** entrar (MLPs, logisticas, florestas). Para cada familia ativa treina-se **N** modelos (total = N x numero de familias marcadas). Cada modelo e' calibrado por Platt no validation. **Opcionalmente** ative **stacking**: uma meta-MLP treinada **somente no validation** sobre `[features | probs dos membros base]`; senao o score final e' a **media** das probabilidades calibradas.
+- MLPs sorteiam arquitetura, dropout, ativacao, lr, weight decay e batch size; logisticas sorteiam C, penalty (l1/l2) e class_weight (none/balanced); florestas sorteiam familia (RF/ExtraTrees), n_estimators, max_depth, min_samples_leaf, max_features e class_weight.
 - Loss **Focal + label smoothing** (so MLPs), mixup de positivos, **hard negative mining** e **simetria (A,B)/(B,A)**.
 - Mais epocas e paciencia de early stopping; embeddings **BERTimbau-large** e TF-IDF mais largos no enriquecimento.
 
 **O que voce ve abaixo**
 
-- **Loss por epoca** (apenas MLPs): as logisticas treinam por solver fechado (sem epocas),
+- **Loss por epoca** (apenas MLPs): as logisticas treinam por solver fechado (sem epocas) e as florestas crescem por busca exaustiva de splits (tambem sem epocas),
   entao os graficos de loss/metricas por epoca cobrem somente as MLPs do bagging.
   **Loss deve cair com o tempo**. Se ficar oscilando ou crescer, o aprendizado nao esta convergindo.
 - **Metricas de validacao**: medidas em pares que o modelo NAO viu durante o treino,
@@ -1330,13 +1947,22 @@ para errar menos.
     _render_preproc_drift_warning(cfg)
 
     n_models = max(1, min(100, int(cfg.get("n_per_kind", 3))))
+    n_fam = sum(
+        [
+            bool(cfg.get("bagging_include_mlp", True)),
+            bool(cfg.get("bagging_include_logreg", False)),
+            bool(cfg.get("bagging_include_forest", False)),
+        ]
+    )
+    tot_base = int(n_models) * int(n_fam)
+    _stk = "stacking (meta-MLP no validation)" if cfg.get(
+        "use_meta_stacking",
+    ) else "media das preds calibradas"
     st.caption(
-        f"Sera treinado um bagging hibrido de **{n_models} MLPs + {n_models} "
-        f"regressoes logisticas** (total = **{2 * n_models} modelos**) "
-        f"reusando a matriz de features ja em cache "
-        f"({X.shape[0]:,} pares X {X.shape[1]:,} features). "
-        f"Apos o sucesso, os artefatos sao gravados automaticamente em "
-        f"`pipelines/<run_id>/` e espelhados em `artifacts/`.",
+        f"Familias ativas: **{n_fam}** — ate **{tot_base}** modelos base "
+        f"(N={n_models} por familia). Agregacao final: **{_stk}**. "
+        f"Matriz em cache: {X.shape[0]:,} pares x {X.shape[1]:,} features. "
+        "Artefatos gravados em `pipelines/<run_id>/` e espelho em `artifacts/`.",
     )
 
     c1, c2 = st.columns(2)
@@ -1397,16 +2023,32 @@ para errar menos.
         def on_variant_start(
             key: str, i: int, total: int, kind: str = "mlp",
         ) -> None:
-            kind_label = (
-                "MLP" if kind == "mlp" else "Regressao Logistica"
-            )
-            tail = (
-                "nova amostra de arquitetura/hiperparametros; "
-                "treino + epocas abaixo referem-se a esta rede."
-                if kind == "mlp" else
-                "nova amostra de C/penalty/class_weight; "
-                "treino fechado (sem epocas) sobre o split balanceado."
-            )
+            kind_label_map = {
+                "mlp": "MLP",
+                "logreg": "Regressao Logistica",
+                "rf": "Random Forest",
+                "extratrees": "Extra Trees",
+            }
+            kind_label = kind_label_map.get(kind, "Modelo")
+            tail_map = {
+                "mlp": (
+                    "nova amostra de arquitetura/hiperparametros; "
+                    "treino + epocas abaixo referem-se a esta rede."
+                ),
+                "logreg": (
+                    "nova amostra de C/penalty/class_weight; "
+                    "treino fechado (sem epocas) sobre o split balanceado."
+                ),
+                "rf": (
+                    "nova amostra de n_estimators/max_depth/max_features; "
+                    "RF cresce arvores com bootstrap interno (sem epocas)."
+                ),
+                "extratrees": (
+                    "nova amostra de n_estimators/max_depth/max_features; "
+                    "ExtraTrees usa splits aleatorios (sem epocas)."
+                ),
+            }
+            tail = tail_map.get(kind, "")
             status_slot.info(
                 f"**Bagging:** {kind_label} **{i} de {total}** (`{key}`) — "
                 f"{tail}"
@@ -1432,7 +2074,7 @@ para errar menos.
         _draw_history(st.session_state.history)
 
 
-def tab_evaluation() -> None:
+def tab_evaluation(cfg: dict[str, Any]) -> None:
     st.header("4. Avaliacao")
     _render_pipeline_progress()
 
@@ -1483,23 +2125,34 @@ negativos; idealmente os positivos (em uma cor) ficam concentrados a direita
     model = st.session_state.get("model")
     splits = st.session_state.get("splits")
     ensemble_members = st.session_state.get("ensemble_members")
-    mlp_members, lr_members = _get_bagging_lists()
+    mlp_members, lr_members, rf_members = _get_bagging_lists()
     calibrator = st.session_state.get("calibrator")
     if model is None or splits is None:
         st.info("Treine o modelo na aba **3. Treino** primeiro.")
         return
 
+    if not _validate_training_enrichment_alignment(cfg):
+        return
+
     X_test, y_test = splits["test"]
-    if mlp_members or lr_members:
-        scores_test = predict_hybrid_bagging(
-            mlp_members, lr_members, X_test, apply_calibration=True,
+    if mlp_members or lr_members or rf_members:
+        scores_test = _session_predict_scores(X_test)
+        n_total = (
+            len(mlp_members) + len(lr_members) + len(rf_members)
         )
-        st.caption(
-            f"Bagging hibrido: {len(mlp_members)} MLPs + "
-            f"{len(lr_members)} regressoes logisticas. Score = media "
-            f"das {len(mlp_members) + len(lr_members)} probabilidades "
-            "calibradas (Platt por modelo)."
-        )
+        if bool(st.session_state.get("use_meta_stacking")):
+            st.caption(
+                f"Stacking ativo: meta-MLP sobre contexto + {n_total} preds "
+                "base calibradas (Platt por modelo)."
+            )
+        else:
+            st.caption(
+                f"Bagging: {len(mlp_members)} MLPs + "
+                f"{len(lr_members)} regressoes logisticas + "
+                f"{len(rf_members)} florestas (RF/ExtraTrees). "
+                f"Score = media das {n_total} probabilidades calibradas "
+                "(Platt por modelo)."
+            )
     elif ensemble_members:
         scores_test = predict_ensemble(
             ensemble_members, X_test, apply_calibration=True,
@@ -1637,7 +2290,7 @@ negativos; idealmente os positivos (em uma cor) ficam concentrados a direita
         )
 
 
-def tab_explainability() -> None:
+def tab_explainability(cfg: dict[str, Any]) -> None:
     st.header("5. Explicabilidade")
     _render_pipeline_progress()
 
@@ -1693,18 +2346,30 @@ Para cada feature, o sistema:
     model = st.session_state.get("model")
     splits = st.session_state.get("splits")
     names = st.session_state.get("feature_names")
-    mlp_members, lr_members = _get_bagging_lists()
+    mlp_members, lr_members, rf_members = _get_bagging_lists()
     if model is None or splits is None:
         st.info("Treine o modelo na aba **3. Treino** primeiro.")
         return
 
+    if not _validate_training_enrichment_alignment(cfg):
+        return
+
     X_val, y_val = splits["val"]
-    if mlp_members or lr_members:
-        st.caption(
-            f"Importancia calculada sobre o score agregado do bagging "
-            f"hibrido (**{len(mlp_members)} MLPs + {len(lr_members)} "
-            f"regressoes logisticas**, media calibrada Platt por modelo).",
-        )
+    if mlp_members or lr_members or rf_members:
+        if bool(st.session_state.get("use_meta_stacking")):
+            st.caption(
+                "Stacking **ligado**: permutation importance **somente nas "
+                "features de contexto** (colunas originais); ao embaralhar, "
+                "as probabilidades dos modelos base sao recalculadas de forma "
+                "coerente com o vetor perturbado."
+            )
+        else:
+            st.caption(
+                f"Importancia sobre o score agregado do bagging "
+                f"(**{len(mlp_members)} MLPs + {len(lr_members)} "
+                f"regressoes logisticas + {len(rf_members)} florestas "
+                "(RF/ExtraTrees)**, media calibrada Platt por modelo).",
+            )
 
     sample_max = min(2000, len(y_val))
     sample = st.slider(
@@ -1720,13 +2385,32 @@ Para cada feature, o sistema:
         try:
             with StepTimer("explainability"):
                 with st.spinner("Calculando importance..."):
-                    if mlp_members or lr_members:
+                    if (
+                        bool(st.session_state.get("use_meta_stacking"))
+                        and st.session_state.get("meta_stacking_model")
+                        and (mlp_members or lr_members or rf_members)
+                    ):
+                        meta_m = st.session_state.meta_stacking_model
+                        top = permutation_importance_stacking_context(
+                            meta_m,
+                            mlp_members,
+                            lr_members,
+                            rf_members or None,
+                            X_val[idx],
+                            y_val[idx],
+                            int(X_val.shape[1]),
+                            names,
+                            metric=metric,
+                            n_repeats=n_repeats,
+                        )
+                    elif mlp_members or lr_members or rf_members:
                         top = permutation_importance_hybrid(
                             mlp_members,
                             lr_members,
                             X_val[idx],
                             y_val[idx],
                             names,
+                            forest_members=rf_members or None,
                             metric=metric,
                             n_repeats=n_repeats,
                         )
@@ -1754,7 +2438,7 @@ Para cada feature, o sistema:
         st.dataframe(df[cols_show], use_container_width=True)
 
 
-def tab_manual_test() -> None:
+def tab_manual_test(cfg: dict[str, Any]) -> None:
     st.header("6. Teste manual")
     _render_pipeline_progress()
 
@@ -1771,6 +2455,9 @@ def tab_manual_test() -> None:
         )
         return
 
+    if not _validate_training_enrichment_alignment(cfg):
+        return
+
     # ---- Picker de pares reais do conjunto de teste ----
     st.subheader("Selecionar par real da massa de teste")
     splits = st.session_state.get("splits")
@@ -1781,11 +2468,9 @@ def tab_manual_test() -> None:
         if idx_test is not None and len(idx_test) > 0:
             try:
                 X_test, y_test = splits["test"]
-                mlp_pre, lr_pre = _get_bagging_lists()
-                if mlp_pre or lr_pre:
-                    test_scores_full = predict_hybrid_bagging(
-                        mlp_pre, lr_pre, X_test, apply_calibration=True,
-                    )
+                mlp_pre, lr_pre, rf_pre = _get_bagging_lists()
+                if mlp_pre or lr_pre or rf_pre:
+                    test_scores_full = _session_predict_scores(X_test)
                 else:
                     test_scores_full = predict_scores(model, X_test)
                 pred_lbl = (test_scores_full >= threshold).astype(int)
@@ -1979,25 +2664,57 @@ def tab_manual_test() -> None:
                     ensemble_members = st.session_state.get(
                         "ensemble_members",
                     )
-                    mlp_members, lr_members = _get_bagging_lists()
+                    mlp_members, lr_members, rf_members = _get_bagging_lists()
                     calibrator = st.session_state.get("calibrator")
 
+                    _stack_on = (
+                        bool(st.session_state.get("use_meta_stacking"))
+                        and st.session_state.get("meta_stacking_model") is not None
+                    )
+                    _phase2_tail = (
+                        "forward base + meta-MLP (stacking)..."
+                        if _stack_on
+                        else "(forward + Platt + media)..."
+                    )
                     calc_stat.markdown(
-                        f"**Fase 2/4 — Bagging hibrido:** {len(mlp_members)} "
-                        f"MLPs + {len(lr_members)} regressoes logisticas "
-                        "(forward + Platt + media)...",
+                        f"**Fase 2/4 — Bagging:** {len(mlp_members)} "
+                        f"MLPs + {len(lr_members)} regressoes logisticas + "
+                        f"{len(rf_members)} florestas (RF/ExtraTrees) "
+                        f"{_phase2_tail}",
                     )
                     manual_phase_box.info(
-                        "**Fase 2/4** — Forward MLPs + LogRegs + calibracao Platt.",
+                        "**Fase 2/4** — "
+                        + (
+                            "Predicoes dos membros base e composicao pela "
+                            "meta-MLP (stacking)."
+                            if _stack_on
+                            else "Predicoes dos membros base + calibracao "
+                            "Platt + media simples."
+                        ),
                     )
                     by_arch_rows: list[dict[str, Any]] | None = None
-                    if mlp_members or lr_members:
+                    if mlp_members or lr_members or rf_members:
                         comp_mat, comp_info = predict_hybrid_bagging_components(
                             mlp_members, lr_members, X_pair,
+                            forest_members=rf_members or None,
                             apply_calibration=True,
                         )
                         comp_row = comp_mat[0]
-                        nn_score = float(comp_row.mean())
+                        if _stack_on:
+                            Z_pair, _mc = build_meta_design_matrix(
+                                X_pair,
+                                mlp_members or None,
+                                lr_members or None,
+                                rf_members or None,
+                            )
+                            nn_score = float(
+                                predict_meta_stacking_scores(
+                                    st.session_state.meta_stacking_model,
+                                    Z_pair,
+                                )[0]
+                            )
+                        else:
+                            nn_score = float(comp_row.mean())
                         by_arch_rows = [
                             {
                                 "tipo": info["kind"],
@@ -2028,20 +2745,50 @@ def tab_manual_test() -> None:
 
                     calc_stat.markdown(
                         "**Fase 4/4 — Explicabilidade:** Integrated Gradients "
-                        "(contribuicao por feature neste par)...",
+                        "(contribuicoes neste par)...",
                     )
-                    manual_phase_box.info(
-                        "**Fase 4/4** — Integrated Gradients (GPU se disponivel; "
-                        "MLPs via captum, logisticas via contribuicao linear analitica).",
-                    )
-                    if mlp_members or lr_members:
-                        attrib = integrated_gradients_hybrid_row(
-                            mlp_members, lr_members, X_pair[0], names,
+                    if (
+                        _stack_on
+                        and (mlp_members or lr_members or rf_members)
+                    ):
+                        Z_ig, meta_cols_ig = build_meta_design_matrix(
+                            X_pair,
+                            mlp_members or None,
+                            lr_members or None,
+                            rf_members or None,
+                        )
+                        z_names = list(names) + [
+                            f"pred_{c['kind']}_{c['key']}"
+                            for c in meta_cols_ig
+                        ]
+                        manual_phase_box.info(
+                            "**Fase 4/4** — IG **somente na meta-MLP** sobre o "
+                            "vetor concatenado (contexto + probabilidades dos "
+                            "membros base). Nao interpreta causalmente cada "
+                            "modelo base isolado.",
+                        )
+                        attrib = integrated_gradients_for_row(
+                            st.session_state.meta_stacking_model,
+                            Z_ig[0],
+                            z_names,
                         )
                     else:
-                        attrib = integrated_gradients_for_row(
-                            model, X_pair[0], names,
+                        manual_phase_box.info(
+                            "**Fase 4/4** — Integrated Gradients combinado: "
+                            "MLPs via Captum (logit), logisticas via "
+                            "contribuicao linear analitica (logit) e florestas "
+                            "via TreeSHAP (probabilidade). Cada vetor e' "
+                            "normalizado por `sum(|c|)` antes da media.",
                         )
+                        if mlp_members or lr_members or rf_members:
+                            attrib = integrated_gradients_hybrid_row(
+                                mlp_members, lr_members, X_pair[0], names,
+                                forest_members=rf_members or None,
+                            )
+                        else:
+                            attrib = integrated_gradients_for_row(
+                                model, X_pair[0], names,
+                            )
                     calc_stat.update(
                         label="**Concluido** — todas as fases terminaram.",
                         state="complete",
@@ -2070,6 +2817,10 @@ def tab_manual_test() -> None:
                     n_lr_models = sum(
                         1 for r in by_arch_rows if r["tipo"] == "logreg"
                     )
+                    n_rf_models = sum(
+                        1 for r in by_arch_rows
+                        if r["tipo"] in ("rf", "extratrees")
+                    )
                     scores_only = [r["score"] for r in by_arch_rows]
                     if n_total <= 8:
                         st.caption(
@@ -2083,7 +2834,8 @@ def tab_manual_test() -> None:
                         st.caption(
                             f"Bagging com {n_total} modelos "
                             f"({n_mlp_models} MLPs + {n_lr_models} "
-                            f"logisticas). Score agregado={nn_score:.4f}, "
+                            f"logisticas + {n_rf_models} florestas). "
+                            f"Score agregado={nn_score:.4f}, "
                             f"min={min(scores_only):.4f}, "
                             f"max={max(scores_only):.4f}."
                         )
@@ -2096,11 +2848,22 @@ def tab_manual_test() -> None:
                 st.subheader(
                     "Top 10 features que mais influenciaram este score",
                 )
+                if (
+                    bool(st.session_state.get("use_meta_stacking"))
+                    and st.session_state.get("meta_stacking_model")
+                ):
+                    st.caption(
+                        "Com stacking: lista mistura **features brutas** e "
+                        "**probabilidades dos membros base** (`pred_*`), todas "
+                        "no mesmo vetor de entrada da meta-MLP."
+                    )
                 df_attr = pd.DataFrame(
                     attach_descriptions(attrib),
                 ).head(10)
                 cols_show = [
-                    c for c in ("feature", "attribution", "descricao")
+                    c for c in (
+                        "feature", "attribution", "contribution", "descricao",
+                    )
                     if c in df_attr.columns
                 ]
                 st.dataframe(df_attr[cols_show], use_container_width=True)
@@ -2139,7 +2902,17 @@ permutation importance na aba 5).
     ensemble_members: list[EnsembleMember] | None = st.session_state.get("ensemble_members")
     arch_bagging_members = st.session_state.get("arch_bagging_members")
     logreg_bagging_members = st.session_state.get("logreg_bagging_members")
+    forest_bagging_members = st.session_state.get("forest_bagging_members")
     calibrator: PlattCalibrator | None = st.session_state.get("calibrator")
+    bag_inc_mlp = st.session_state.get("bagging_include_mlp")
+    bag_inc_lr = st.session_state.get("bagging_include_logreg")
+    bag_inc_rf = st.session_state.get("bagging_include_forest")
+    if bag_inc_mlp is None:
+        bag_inc_mlp = bool(arch_bagging_members)
+    if bag_inc_lr is None:
+        bag_inc_lr = bool(logreg_bagging_members)
+    if bag_inc_rf is None:
+        bag_inc_rf = bool(forest_bagging_members)
 
     if not all([df is not None, preproc is not None, X is not None, model is not None, em_test is not None]):
         st.info("Conclua treino e avaliacao antes de exportar artefatos.")
@@ -2196,12 +2969,21 @@ permutation importance na aba 5).
                 ensemble_members=ensemble_members,
                 arch_bagging_members=arch_bagging_members,
                 logreg_bagging_members=logreg_bagging_members,
+                forest_bagging_members=forest_bagging_members,
                 calibrator=calibrator,
                 importance_top=st.session_state.get("importance_top"),
                 auto_imp=auto_imp,
                 progress_callback_enriched=lambda p, m: prog_enr.progress(
                     min(1.0, max(0.0, float(p))), text=str(m)[:95],
                 ),
+                meta_stacking_model=st.session_state.get("meta_stacking_model"),
+                meta_stacking_enabled=bool(
+                    st.session_state.get("use_meta_stacking"),
+                ),
+                stacking_meta_cols=st.session_state.get("stacking_meta_cols"),
+                bagging_include_mlp=bool(bag_inc_mlp),
+                bagging_include_logreg=bool(bag_inc_lr),
+                bagging_include_forest=bool(bag_inc_rf),
             )
             prog_enr.progress(1.0, text="Exportacao concluida.")
             if imp is not None:
@@ -2264,11 +3046,11 @@ def main() -> None:
     with tabs[2]:
         tab_train(cfg)
     with tabs[3]:
-        tab_evaluation()
+        tab_evaluation(cfg)
     with tabs[4]:
-        tab_explainability()
+        tab_explainability(cfg)
     with tabs[5]:
-        tab_manual_test()
+        tab_manual_test(cfg)
     with tabs[6]:
         tab_artifacts()
 

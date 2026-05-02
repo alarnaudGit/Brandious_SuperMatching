@@ -69,6 +69,7 @@ def build_model_config_dict(
     embedding_used: bool,
     architecture_bagging: dict[str, Any] | None = None,
     logreg_bagging: dict[str, Any] | None = None,
+    forest_bagging: dict[str, Any] | None = None,
     hybrid_bagging: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     arch_dict = (
@@ -110,6 +111,8 @@ def build_model_config_dict(
         cfg["architecture_bagging"] = architecture_bagging
     if logreg_bagging:
         cfg["logreg_bagging"] = logreg_bagging
+    if forest_bagging:
+        cfg["forest_bagging"] = forest_bagging
     if hybrid_bagging:
         cfg["hybrid_bagging"] = hybrid_bagging
     return _to_jsonable(cfg)

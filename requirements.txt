@@ -16,6 +16,7 @@ joblib
 openpyxl
 pyarrow
 tqdm
+shap
 # Sprint 2: arquiteturas alternativas. pytorch-frame e' opcional: a
 # implementacao FT-Transformer em src/model/architectures.py e' nativa em
 # torch puro e roda sem ele. Instale somente se quiser experimentar
